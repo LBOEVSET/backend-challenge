@@ -30,7 +30,12 @@ jobs:
 
       - name: Run tests with coverage
         run: |
-          go test ./... -coverprofile=coverage.out -covermode=atomic
+          # -coverpkg makes Go measure coverage in the application packages
+          # even though the test files live in test/service (external test package).
+          go test ./... \
+            -coverprofile=coverage.out \
+            -covermode=atomic \
+            -coverpkg=./internal/application/...,./internal/domain/...,./pkg/...
           # Check overall coverage is at least 70%
           COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | tr -d '%')
           echo "Total coverage: ${COVERAGE}%"
