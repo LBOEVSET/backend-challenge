@@ -1,152 +1,140 @@
 # Lottery Search System — Design Proposal
 
-## Overview
-
-Design a system that can search 1 million 6-digit lottery tickets by wildcard pattern (e.g. `1****5`, `****23`) and distribute results to concurrent users without duplication.
+> Design a system to search 1 million 6-digit lottery tickets by wildcard pattern and distribute results to concurrent users without duplication.
 
 ---
 
-## 1. Data Structures & Algorithm
+## 1. Requirements Summary
 
-### Ticket representation
-
-Each ticket is a 6-digit string: `"000000"` to `"999999"` (1 million entries). The entire space fits in memory.
-
-### Positional bitmap index
-
-Pre-compute **60 bitmaps** — one per (position, digit) combination:
-
-```
-bitmap[pos][digit]  →  bitset of 1 M bits
-```
-
-For ticket `"123456"`:
-- `bitmap[0]['1']` sets bit 123456
-- `bitmap[1]['2']` sets bit 123456
-- …
-- `bitmap[5]['6']` sets bit 123456
-
-**Memory**: 60 × (1,000,000 bits / 8) = 60 × 125 KB = **7.5 MB** — trivially in-memory.
-
-### Pattern matching algorithm
-
-For a query like `"1****5"`:
-
-1. Identify constrained positions: pos 0 = `'1'`, pos 5 = `'5'`
-2. AND the corresponding bitmaps: `bitmap[0]['1'] AND bitmap[5]['5']`
-3. The resulting bitset contains all matching ticket IDs
-
-**Time complexity**: O(N/64) per AND operation (64-bit words), where N = 1,000,000 → ≈ 15,625 word operations. Sub-millisecond for any pattern.
-
-**Pre-computed pattern cache**: For patterns seen repeatedly, cache the result bitset. An LRU cache of ~10,000 patterns costs < 2 GB (1M bits × 10,000 / 8 = 1.25 GB). In practice patterns are few, so cache size is much smaller.
-
----
-
-## 2. Recommended Production Database / Storage
-
-### Primary store: **Redis** (with custom bitmap structures)
-
-**Why Redis:**
-- Native `BITAND`, `BITCOUNT`, `BITPOS` operations run server-side with no data transfer overhead.
-- Single-threaded command execution guarantees atomicity — `LPOP` from a matching-ticket list is atomic by design, preventing duplicate assignments.
-- Persistence (RDB + AOF) provides durability when needed.
-- Horizontal scaling via Redis Cluster if the dataset grows beyond a single node.
-
-**Complementary: PostgreSQL** for durable ticket ownership records and audit trails (who received which ticket, when).
-
-### Data layout in Redis
-
-```
-# Bitmap index
-bitmap:{pos}:{digit}     →  BITMAP of 1M bits
-
-# Per-pattern result queue (populated on first query, then consumed atomically)
-queue:{pattern}          →  Redis LIST of ticket IDs [ "123456", "100005", … ]
-
-# Ticket ownership log
-owner:{ticket_id}        →  Hash { user_id, assigned_at, pattern }
-```
-
----
-
-## 3. Concurrency / Distribution Strategy
-
-### The problem
-
-Two users submit the same pattern simultaneously. Naive search returns the same list to both → duplicate assignments.
-
-### Solution: Atomic queue consumption
-
-**On first request for a pattern:**
-
-1. Evaluate the bitmap query → sorted list of matching ticket IDs.
-2. Atomically push all matching IDs into `queue:{pattern}` with `RPUSH` (only if key does not exist — use `SETNX` + `EXPIRE` on a lock key to ensure single population).
-3. `LPOP queue:{pattern}` → returns one ticket atomically to this user.
-
-**On subsequent requests for the same pattern:**
-
-- `LPOP queue:{pattern}` → returns the next available ticket, never the same ticket twice.
-
-**If all tickets are consumed:** return "no tickets available" or refill from a reserved pool.
-
-**Ticket return:** If a user does not claim their ticket within a TTL, a background worker uses `RPUSH` to return it to the queue.
-
-```
-User A ──LPOP queue:"1****5"──→ "100005"   ✓ unique
-User B ──LPOP queue:"1****5"──→ "100015"   ✓ unique
-User C ──LPOP queue:"1****5"──→ "100025"   ✓ unique
-```
-
-Redis guarantees that `LPOP` is atomic — two clients cannot receive the same element.
-
-### Race condition during initial queue population
-
-Use a **Redis lock** to ensure only one process populates the queue for a given pattern:
-
-```
-SET lock:{pattern} 1 NX EX 5   # acquire lock, 5 s TTL
-… populate queue …
-DEL lock:{pattern}              # release lock
-```
-
-Other workers wait or retry. Once the queue exists, all workers use `LPOP` directly with no further locking needed.
-
----
-
-## 4. Performance Analysis
-
-| Operation | Cost |
+| # | Requirement |
 |---|---|
-| Bitmap AND for one pattern | O(N/64) ≈ 15K ops → **< 1 ms** |
-| Cache hit (pre-computed pattern) | O(1) → **< 0.1 ms** |
-| Redis LPOP (ticket assignment) | O(1) → **< 0.2 ms** network |
-| Full index build (startup) | O(N × 6) ≈ 6M ops → **< 1 s** |
-
-**Throughput**: Redis handles > 100,000 operations/second on modest hardware. Concurrent `LPOP` requests for the same pattern are serialised by Redis's single-threaded model — no locking overhead on the hot path.
-
-**Scalability**: The 7.5 MB bitmap index fits in L3 cache on a modern CPU. For > 1M tickets, Redis Cluster shards the keyspace automatically.
+| Data | 1 million tickets, each a 6-digit number (`000000`–`999999`) |
+| Search | 6-character pattern with digits and `*` wildcards (e.g. `1****5`, `****23`) |
+| Distribution | Same ticket must never be assigned to two users simultaneously |
+| Performance | Sub-millisecond search on 1M+ records |
 
 ---
 
-## 5. Architecture Diagram
+## 2. Recommended Storage — Redis + PostgreSQL
+
+### Redis (primary)
+- Native bitmap operations (`BITOP AND`) run server-side with zero data-transfer overhead
+- Single-threaded command execution makes every `LPOP` atomic — no separate locking needed for ticket assignment
+- Persistence via RDB + AOF when durability is required
+- Scales horizontally via Redis Cluster if the dataset grows
+
+### PostgreSQL (secondary)
+- Durable ownership records: who received which ticket, when, and for which pattern
+- Audit trail and analytics queries
+
+---
+
+## 3. Data Structures & Algorithm
+
+### Bitmap index
+
+Pre-compute **60 bitmaps** — one per (position, digit) pair:
 
 ```
-Client A ──┐                         ┌─ Redis ─────────────────────────────┐
-Client B ──┤──► API Server ──────►  │  bitmap[pos][digit]  (index)        │
-Client C ──┘    (Go/gRPC)           │  queue:{pattern}     (FIFO of IDs)  │
-                     │              │  owner:{ticket_id}   (assignment log)│
-                     └─ PostgreSQL  └─────────────────────────────────────┘
-                       (audit log)
+bitmap[pos][digit]  →  bitset of 1,000,000 bits
+```
+
+For ticket `"123456"`, bits are set in:
+`bitmap[0][1]`, `bitmap[1][2]`, `bitmap[2][3]`, `bitmap[3][4]`, `bitmap[4][5]`, `bitmap[5][6]`
+
+**Memory**: 60 × 125 KB = **7.5 MB** — fits entirely in L3 cache.
+
+### Pattern matching
+
+For pattern `"1****5"`:
+1. Parse constrained positions: `pos[0] = 1`, `pos[5] = 5`
+2. AND the two bitmaps: `bitmap[0][1] AND bitmap[5][5]`
+3. The resulting bitset contains every matching ticket ID
+
+**Time complexity**: O(N/64) per AND — ~15,625 64-bit word operations for 1M tickets → **< 1 ms**.
+
+**Pattern cache**: Results for previously-seen patterns are cached as bitsets. An LRU cache of 10,000 patterns costs < 1.5 GB. In practice patterns are sparse, so memory usage is much lower.
+
+### Redis key layout
+
+```
+bitmap:{pos}:{digit}     →  BITMAP (1M bits per key)
+queue:{pattern}          →  LIST of ticket IDs, consumed via LPOP
+lock:{pattern}           →  STRING (SET NX EX 5), prevents duplicate queue population
+reserved:{ticket_id}     →  STRING with TTL, marks ticket as pending claim
 ```
 
 ---
 
-## 6. Design Decisions & Trade-offs
+## 4. Concurrency Strategy — Atomic Queue Consumption
+
+### Problem
+Two users submit the same pattern at the same time. A naïve scan returns the same list to both → duplicate assignment.
+
+### Solution
+
+**First request for a pattern:**
+1. Acquire `lock:{pattern}` with `SET NX EX 5` (5-second TTL)
+2. Run bitmap AND → list of matching ticket IDs
+3. `RPUSH queue:{pattern} [ids...]` to populate the queue
+4. Release lock
+5. `LPOP queue:{pattern}` → returns one ticket atomically to this user
+
+**All subsequent requests:**
+- `LPOP queue:{pattern}` → returns the next available ticket, never a duplicate
+
+**If no tickets remain:** return "no tickets available"
+
+**Ticket return (timeout):**
+- On `LPOP`, set `reserved:{ticket_id}` with a 30-second TTL
+- If user doesn't confirm within TTL, a background worker `RPUSH`es the ticket back to `queue:{pattern}`
+
+```
+User A  LPOP queue:"1****5"  →  "100005"  ✓ unique
+User B  LPOP queue:"1****5"  →  "100015"  ✓ unique
+User C  LPOP queue:"1****5"  →  "100025"  ✓ unique
+```
+
+Redis guarantees `LPOP` is atomic — two clients cannot receive the same element.
+
+---
+
+## 5. Ticket Lifecycle
+
+```
+┌───────────┐   LPOP (atomic)   ┌──────────────┐   User confirms   ┌──────────┐
+│ Available │ ────────────────► │   Reserved   │ ────────────────► │ Assigned │
+│ in queue  │                   │  TTL = 30s   │                   │  in PG   │
+└───────────┘                   └──────────────┘                   └──────────┘
+      ▲                                │
+      │          TTL expired           │
+      └────────────────────────────────┘
+             background worker RPUSH
+```
+
+---
+
+## 6. Performance Analysis
+
+| Operation | Complexity | Latency |
+|---|---|---|
+| Bitmap AND (pattern match) | O(N/64) ~15K ops | **< 1 ms** |
+| Cache hit (seen pattern) | O(1) | **< 0.1 ms** |
+| LPOP (ticket assignment) | O(1) | **< 0.2 ms** |
+| Index build at startup | O(N×6) ~6M ops | **< 1 s** |
+| Full index memory | 60 × 125 KB | **7.5 MB** |
+
+Redis handles > 100,000 ops/sec on modest hardware. Concurrent `LPOP` requests for the same pattern are serialised by Redis's single-threaded model — no locking overhead on the hot path.
+
+---
+
+## 7. Design Decisions & Trade-offs
 
 | Decision | Reasoning |
 |---|---|
-| Redis bitmaps over SQL LIKE | SQL `LIKE '1%5'` requires a full table scan (1M rows). Bitmaps are O(N/64) and CPU-cache friendly. |
-| Per-pattern queues over real-time scan | Pre-materialising the queue separates search cost from assignment cost. Assignment is O(1). |
+| Redis bitmaps over SQL LIKE | SQL `LIKE '1%5'` requires a full table scan on 1M rows. Bitmaps are O(N/64) and CPU-cache friendly. |
+| Per-pattern queues over real-time scan | Separates search cost (one-time) from assignment cost (O(1) per user). |
 | Redis over Elasticsearch | Elasticsearch handles wildcard full-text well but adds operational complexity. For fixed-length numeric patterns, bitmaps are simpler and faster. |
 | Queue per pattern over global lock | A global lock serialises all users. Per-pattern queues allow full parallelism across different patterns. |
-| Return-to-queue on timeout | Prevents ticket starvation when users abandon their session before claiming. |
+| Reservation TTL over permanent hold | Prevents ticket starvation when users abandon sessions before confirming. |
+| PostgreSQL for audit | Redis is ephemeral by default. Ownership records need durability — PostgreSQL is the right tool. |
