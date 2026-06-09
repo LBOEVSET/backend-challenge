@@ -35,7 +35,7 @@ jobs:
           go test ./... \
             -coverprofile=coverage.out \
             -covermode=atomic \
-            -coverpkg=./internal/application/...,./internal/domain/...,./pkg/...,./test/service/...
+            -coverpkg=./internal/application/...,./internal/domain/...,./internal/adapter/http/...,./pkg/...,./test/service/...
           # Check overall coverage is at least 70%
           COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | tr -d '%')
           echo "Total coverage: ${COVERAGE}%"
