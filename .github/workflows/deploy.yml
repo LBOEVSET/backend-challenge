@@ -2,7 +2,7 @@ name: Build & Deploy Backend Challenge
 
 on:
   push:
-    branches: [main]
+    branches: [dev]
 
 env:
   PROJECT_ID: agentassistant-496719
