@@ -31,11 +31,15 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Install gotestsum
+        run: go install gotest.tools/gotestsum@latest
+
       - name: Run tests with coverage
         run: |
+          # gotestsum generates a JUnit XML report (uploaded to SonarQube as test execution data).
           # -coverpkg makes Go measure coverage in the application packages
           # even though the test files live in test/service (external test package).
-          go test ./... \
+          gotestsum --junitfile test-report.xml -- ./... \
             -coverprofile=coverage.out \
             -covermode=atomic \
             -coverpkg=./internal/application/...,./internal/domain/...,./internal/adapter/http/...,./pkg/...,./test/service/...
