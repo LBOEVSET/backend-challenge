@@ -39,7 +39,7 @@ jobs:
           # gotestsum generates a JUnit XML report (uploaded to SonarQube as test execution data).
           # -coverpkg makes Go measure coverage in the application packages
           # even though the test files live in test/service (external test package).
-          gotestsum --junitfile test-report.xml -- ./... \
+          gotestsum --format testname --junitfile test-report.xml -- ./... \
             -coverprofile=coverage.out \
             -covermode=atomic \
             -coverpkg=./internal/application/...,./internal/domain/...,./internal/adapter/http/...,./pkg/...,./test/service/...
@@ -51,6 +51,11 @@ jobs:
             echo "::notice::Fix: add tests for uncovered code paths, then re-push."
             exit 1
           fi
+
+      - name: Print coverage table
+        run: |
+          go tool cover -func=coverage.out > func-coverage.txt
+          python3 scripts/coverage-report.py coverage.out func-coverage.txt
 
       - name: SonarQube scan
         uses: SonarSource/sonarqube-scan-action@v6
