@@ -3,6 +3,9 @@ name: Build & Deploy Backend Challenge
 on:
   push:
     branches: [dev]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
 
 env:
   PROJECT_ID: agentassistant-496719
