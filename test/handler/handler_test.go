@@ -316,7 +316,7 @@ func TestUpdateUser_NotFound(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest(http.MethodPut, "/api/v1/users/notexist",
-		jsonBody(map[string]string{"name": "X"}))
+		jsonBody(map[string]string{"name": "XY"}))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", authHeader("u1"))
 	router.ServeHTTP(w, req)
