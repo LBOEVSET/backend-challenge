@@ -10,16 +10,18 @@ RUN go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.34.2 && \
 
 WORKDIR /app
 
-# Copy source so go mod tidy can resolve all imports including gRPC
-COPY go.mod ./
-COPY . .
+# Download dependencies as a separate cached layer.
+# This layer is only re-run when go.mod or go.sum changes,
+# not on every source file edit.
+COPY go.mod go.sum ./
+RUN go mod download
 
-# Generate proto stubs, resolve all deps, build with gRPC enabled
+# Copy source and build
+COPY . .
 RUN protoc \
       --go_out=. --go_opt=paths=source_relative \
       --go-grpc_out=. --go-grpc_opt=paths=source_relative \
       proto/user/user.proto && \
-    go mod tidy && \
     CGO_ENABLED=0 GOOS=linux go build -tags grpc -o server ./cmd/server
 
 # ── Stage 2: minimal runtime ──────────────────────────────────────────────────
