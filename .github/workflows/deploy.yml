@@ -23,6 +23,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Fetch secrets from Infisical
+        uses: Infisical/secrets-action@v1.0.7
+        with:
+          client-id:     ${{ secrets.INFISICAL_CLIENT_ID }}
+          client-secret: ${{ secrets.INFISICAL_CLIENT_SECRET }}
+          project-slug:  ${{ secrets.INFISICAL_PROJECT_SLUG }}
+          env-slug:      dev
+          export-type:   env
+
       - name: Authenticate to Google Cloud (WIF)
         uses: google-github-actions/auth@v2
         with:
@@ -42,13 +51,13 @@ jobs:
           location:     ${{ secrets.GKE_ZONE }}
           project_id:   ${{ secrets.GCP_PROJECT_ID }}
 
-      - name: Update k8s secret
+      - name: Sync secrets to GKE
         run: |
           kubectl create secret generic backend-challenge-secret \
             --namespace=${{ env.NS }} \
-            --from-literal=MONGODB_URI="${{ secrets.MONGODB_URI }}" \
-            --from-literal=JWT_SECRET="${{ secrets.JWT_SECRET }}" \
-            --from-literal=PORT="8080" \
+            --from-literal=MONGODB_URI="${MONGODB_URI}" \
+            --from-literal=MONGODB_DB="${MONGODB_DB}" \
+            --from-literal=JWT_SECRET="${JWT_SECRET}" \
             --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Build & push Docker image

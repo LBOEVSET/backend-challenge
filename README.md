@@ -2,9 +2,9 @@
 
 ## Quick Start
 
-### Option 1 — Docker Compose (recommended)
+### Option 1 — Docker Compose (recommended for local dev)
 
-Runs the API + MongoDB together with one command:
+Runs the API + MongoDB together with one command. Credentials and URIs are wired automatically.
 
 ```bash
 docker compose up --build
@@ -14,19 +14,24 @@ docker compose up --build
 
 Data is persisted in a Docker volume (`mongo_data`) between restarts.
 
-### Option 2 — Local (requires Go 1.23+ and a running MongoDB)
+### Option 2 — Local (requires Go 1.23+)
 
 ```bash
-# Start MongoDB locally (if not already running)
+# Start MongoDB with credentials
 docker run -d --name mongo-local -p 27017:27017 \
-  -e MONGO_INITDB_ROOT_USERNAME=lboevset \
-  -e MONGO_INITDB_ROOT_PASSWORD=20011966 \
+  -e MONGO_INITDB_ROOT_USERNAME=<username> \
+  -e MONGO_INITDB_ROOT_PASSWORD=<password> \
   mongo:7
 
 # Run the backend
-export MONGODB_URI="mongodb://lboevset:20011966@localhost:27017"
+export MONGODB_URI="mongodb://<username>:<password>@localhost:27017"
 export JWT_SECRET="your-secret"
 go run ./cmd/server
+```
+
+To reuse an existing container:
+```bash
+docker start mongo-local
 ```
 
 ### Tests
@@ -77,13 +82,13 @@ The application layer depends only on `port.UserRepository` — never on the Mon
 
 ## Environment Variables
 
-| Variable      | Default                      | Description              |
-|---------------|------------------------------|--------------------------|
-| `MONGODB_URI` | `mongodb://localhost:27017`  | MongoDB connection string |
-| `MONGODB_DB`  | `assignment`                 | Database name            |
-| `JWT_SECRET`  | `change-me-in-production`    | HMAC signing key         |
-| `PORT`        | `8080`                       | HTTP listen port         |
-| `GRPC_PORT`   | `9090`                       | gRPC listen port         |
+| Variable      | Default                     | Description               |
+|---------------|-----------------------------|---------------------------|
+| `MONGODB_URI` | `mongodb://localhost:27017` | MongoDB connection string |
+| `MONGODB_DB`  | `assignment`                | Database name             |
+| `JWT_SECRET`  | `change-me-in-production`   | HMAC signing key          |
+| `PORT`        | `8080`                      | HTTP listen port          |
+| `GRPC_PORT`   | `9090`                      | gRPC listen port          |
 
 ---
 
@@ -125,16 +130,16 @@ Add `Authorization: Bearer <token>` to every protected request.
 
 ## API Reference
 
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| GET    | /api/v1/health        | —  | Health check        |
-| POST   | /api/v1/auth/register | —  | Register new user   |
-| POST   | /api/v1/auth/login    | —  | Login → JWT         |
-| POST   | /api/v1/users         | ✓  | Create user         |
-| GET    | /api/v1/users         | ✓  | List all users      |
-| GET    | /api/v1/users/:id     | ✓  | Get user by ID      |
-| PUT    | /api/v1/users/:id     | ✓  | Update name/email   |
-| DELETE | /api/v1/users/:id     | ✓  | Delete user         |
+| Method | Path                  | Auth | Description       |
+|--------|-----------------------|------|-------------------|
+| GET    | /api/v1/health        | —    | Health check      |
+| POST   | /api/v1/auth/register | —    | Register new user |
+| POST   | /api/v1/auth/login    | —    | Login → JWT       |
+| POST   | /api/v1/users         | ✓    | Create user       |
+| GET    | /api/v1/users         | ✓    | List all users    |
+| GET    | /api/v1/users/:id     | ✓    | Get user by ID    |
+| PUT    | /api/v1/users/:id     | ✓    | Update name/email |
+| DELETE | /api/v1/users/:id     | ✓    | Delete user       |
 
 ### Sample requests
 
@@ -192,23 +197,34 @@ Push to `main` or `dev` → GitHub Actions:
 2. Pushes to `asia-southeast1-docker.pkg.dev/agentassistant-496719/assignment/backend-challenge`
 3. Rolls out to GKE namespace `assignment`
 
-MongoDB runs as a pod in the same namespace (`mongo:27017`) backed by a PersistentVolumeClaim.
+MongoDB runs as a pod in the same namespace (`mongo:27017`) backed by a 2Gi PersistentVolumeClaim. The backend connects to it via K8s internal DNS — no external exposure needed.
+
+**To update the MongoDB credentials secret in GKE:**
+```bash
+kubectl create secret generic backend-challenge-secret \
+  --namespace=assignment \
+  --from-literal=MONGODB_URI="mongodb://<user>:<pass>@mongo:27017" \
+  --from-literal=JWT_SECRET="<your-secret>" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl rollout restart deployment/backend-challenge -n assignment
+```
 
 **Required GitHub secrets:** `GCP_PROJECT_ID`, `GKE_CLUSTER`, `GKE_ZONE`, `WIF_PROVIDER`, `MONGODB_URI`, `JWT_SECRET`
+
+**Live URL:** `http://8.233.137.90`
 
 ---
 
 ## Lottery Search System
 
-See [`design/lottery-search-system.md`](design/lottery-search-system.md).
+See [`design/lottery-search-system.md`](design/lottery-search-system.md) for the full design proposal.
 
 ---
 
 # Original Assignment
 
 ## Overview
-
-This coding test has two parts.
 
 | Section | Focus | Submission Type |
 |---------|-------|-----------------|
@@ -219,52 +235,25 @@ This coding test has two parts.
 
 ### Requirements
 
-#### 1. User Model
+1. **User Model** — ID, Name, Email, Password (hashed), CreatedAt
+2. **Authentication** — Register, Login → JWT (HS256), middleware-protected routes
+3. **User Operations** — Create, Get by ID, List, Update, Delete
+4. **MongoDB Integration** — official Go driver, persist/retrieve users
+5. **Middleware** — logging (method, path, execution time)
+6. **Concurrency** — background goroutine every 10s to log user count
+7. **Testing** — unit tests with mocked MongoDB
 
-- `ID` (auto-generated)
-- `Name` (string)
-- `Email` (string, unique)
-- `Password` (hashed)
-- `CreatedAt` (timestamp)
+### Bonus (all implemented ✓)
 
-#### 2. Authentication
-
-- User registration
-- User authentication that returns a JWT token
-- Protect endpoints with JWT middleware
-- Sign tokens using HMAC (`HS256`) with a secret key
-
-#### 3. User Operations
-
-- Create, fetch by ID, list all, update name/email, delete
-
-#### 4. MongoDB Integration
-
-- Use the official Go MongoDB driver
-- Persist and retrieve user data from MongoDB
-
-#### 5. Middleware
-
-- Logging middleware: HTTP method, path, execution time
-
-#### 6. Concurrency Task
-
-- Background goroutine every 10 seconds to log total user count
-
-#### 7. Testing
-
-- Unit tests using Go's `testing` package
-- Mock MongoDB interactions
-
-### Bonus
-
-- Containerization (Docker + docker-compose) ✓
-- Go interfaces to abstract MongoDB operations ✓
-- Input validation ✓
-- Graceful shutdown ✓
-- gRPC support ✓
-- Hexagonal architecture ✓
+| Bonus | Status |
+|-------|--------|
+| Docker + docker-compose | ✓ |
+| Go interface abstraction (`port.UserRepository`) | ✓ |
+| Input validation (`go-playground/validator`) | ✓ |
+| Graceful shutdown via `context.Context` | ✓ |
+| gRPC (`CreateUser`, `GetUser`) | ✓ |
+| Hexagonal architecture (domain / port / application / adapter) | ✓ |
 
 ## Lottery Search System
 
-See [`design/lottery-search-system.md`](design/lottery-search-system.md) for the full design proposal.
+See [`design/lottery-search-system.md`](design/lottery-search-system.md).

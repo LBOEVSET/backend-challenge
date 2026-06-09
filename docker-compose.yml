@@ -5,9 +5,9 @@ services:
       - "8080:8080"
       - "9090:9090"
     environment:
-      MONGODB_URI: mongodb://lboevset:20011966@mongo:27017
-      MONGODB_DB:  assignment
-      JWT_SECRET:  local-dev-secret
+      MONGODB_URI: mongodb://${MONGO_USER}:${MONGO_PASS}@mongo:27017
+      MONGODB_DB:  ${MONGODB_DB:-assignment}
+      JWT_SECRET:  ${JWT_SECRET}
       PORT:        "8080"
       GRPC_PORT:   "9090"
     depends_on:
@@ -20,12 +20,12 @@ services:
     ports:
       - "27017:27017"
     environment:
-      MONGO_INITDB_ROOT_USERNAME: lboevset
-      MONGO_INITDB_ROOT_PASSWORD: 20011966
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASS}
     volumes:
       - mongo_data:/data/db
     healthcheck:
-      test: ["CMD", "mongosh", "-u", "lboevset", "-p", "20011966", "--eval", "db.adminCommand('ping')"]
+      test: ["CMD", "mongosh", "-u", "${MONGO_USER}", "-p", "${MONGO_PASS}", "--eval", "db.adminCommand('ping')"]
       interval: 10s
       timeout: 5s
       retries: 5
