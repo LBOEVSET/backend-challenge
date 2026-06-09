@@ -1,4 +1,152 @@
-# Backend Golang Coding Test
+# Backend Challenge — Implementation
+
+## Quick Start
+
+### Docker (recommended)
+
+```bash
+# Set your MongoDB Atlas URI in docker-compose or env
+MONGODB_URI="mongodb+srv://..." docker compose up --build
+# API available at http://localhost:8080
+```
+
+### Local (requires Go 1.22+)
+
+```bash
+export MONGODB_URI="mongodb+srv://..."
+export JWT_SECRET="your-secret"
+go run ./cmd/server
+```
+
+### Tests
+
+```bash
+go test ./... -v
+```
+
+---
+
+## Architecture — Hexagonal (Ports & Adapters)
+
+```
+cmd/server/            ← Entry point: wires everything together
+internal/
+  domain/              ← Core entity (User) — no external deps
+  port/                ← Interface: UserRepository (the port)
+  application/         ← Use cases: Register, Login, CRUD
+  adapter/
+    mongodb/           ← MongoDB adapter (implements port)
+    http/              ← Gin HTTP adapter (handler, middleware, router)
+proto/user.proto       ← gRPC definition (run `make proto` to generate)
+pkg/auth/              ← JWT utilities (HS256)
+pkg/hash/              ← bcrypt helpers
+test/mock/             ← Testify mock for UserRepository
+test/service/          ← Unit tests (no DB required)
+design/                ← Lottery Search System design doc
+```
+
+---
+
+## JWT — How to Generate & Use Tokens
+
+### 1. Register
+
+```bash
+curl -X POST http://localhost:8080/api/v1/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Alice","email":"alice@example.com","password":"secret123"}'
+```
+
+Response:
+```json
+{"id":"...","name":"Alice","email":"alice@example.com","created_at":"2024-01-01T00:00:00Z"}
+```
+
+### 2. Login → get token
+
+```bash
+curl -X POST http://localhost:8080/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"alice@example.com","password":"secret123"}'
+```
+
+Response:
+```json
+{"token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."}
+```
+
+Token properties: HS256, 24-hour TTL, contains `user_id` claim.
+
+### 3. Use the token
+
+Add `Authorization: Bearer <token>` to every protected request.
+
+---
+
+## API Reference
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | /api/v1/health | — | Health check |
+| POST | /api/v1/auth/register | — | Register new user |
+| POST | /api/v1/auth/login | — | Login → JWT |
+| POST | /api/v1/users | ✓ | Create user |
+| GET | /api/v1/users | ✓ | List all users |
+| GET | /api/v1/users/:id | ✓ | Get user by ID |
+| PUT | /api/v1/users/:id | ✓ | Update name/email |
+| DELETE | /api/v1/users/:id | ✓ | Delete user |
+
+### Sample requests
+
+```bash
+TOKEN="eyJ..."
+
+# List users
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/users
+
+# Get user
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/users/<id>
+
+# Update
+curl -X PUT http://localhost:8080/api/v1/users/<id> \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Alice Updated"}'
+
+# Delete
+curl -X DELETE -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/users/<id>
+```
+
+---
+
+## gRPC (Bonus)
+
+The `proto/user.proto` file defines `CreateUser` and `GetUser` RPCs.
+
+To generate Go stubs and enable the gRPC server:
+
+```bash
+# Install protoc and plugins (once)
+brew install protobuf
+go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+
+# Generate
+make proto
+
+# Build with gRPC enabled
+go build -tags grpc -o bin/server ./cmd/server
+```
+
+---
+
+## Lottery Search System
+
+See [`design/lottery-search-system.md`](design/lottery-search-system.md).
+
+---
+
+# Original Assignment
 
 ## Overview
 

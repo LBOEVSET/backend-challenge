@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-challenge
+  namespace: assignment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend-challenge
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: backend-challenge
+    spec:
+      containers:
+        - name: backend-challenge
+          image: asia-southeast1-docker.pkg.dev/agentassistant-496719/assignment/backend-challenge:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: grpc
+              containerPort: 9090
+          envFrom:
+            - secretRef:
+                name: backend-challenge-secret
+          env:
+            - name: MONGODB_DB
+              value: "assignment"
+            - name: PORT
+              value: "8080"
+            - name: GRPC_PORT
+              value: "9090"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 8080
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            failureThreshold: 3
