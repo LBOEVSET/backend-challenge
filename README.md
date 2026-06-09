@@ -1,10 +1,27 @@
 # Backend Challenge
 
-## Quick Start
+## Getting Started
 
-### Option 1 — Docker Compose (recommended for local dev)
+### Prerequisites
+
+| Tool | Version | Check |
+|------|---------|-------|
+| Go | 1.23+ | `go version` |
+| Docker | 24+ | `docker -v` |
+| Docker Compose | v2+ | `docker compose version` |
+
+### Initialize the project
 
 ```bash
+# 1. Clone
+git clone https://github.com/<org>/backend-challenge.git
+cd backend-challenge
+
+# 2. Copy environment file and fill in your values
+cp .env.example .env
+# Edit .env — set MONGO_USER, MONGO_PASS, JWT_SECRET
+
+# 3. Start (API + MongoDB together)
 docker compose up --build
 # HTTP API: http://localhost:8080
 # gRPC:     localhost:9090
@@ -12,29 +29,29 @@ docker compose up --build
 
 Data persists in a Docker volume (`mongo_data`) between restarts.
 
-### Option 2 — Local (Go 1.23+)
+### Option B — Run without Docker
 
 ```bash
-# Start MongoDB
+# Start MongoDB separately
 docker run -d --name mongo-local -p 27017:27017 \
-  -e MONGO_INITDB_ROOT_USERNAME=<user> \
-  -e MONGO_INITDB_ROOT_PASSWORD=<pass> \
+  -e MONGO_INITDB_ROOT_USERNAME=admin \
+  -e MONGO_INITDB_ROOT_PASSWORD=secret \
   mongo:7
 
-# Run the API
-export MONGODB_URI="mongodb://<user>:<pass>@localhost:27017"
-export JWT_SECRET="your-secret"
+# Export env vars and start the API
+export MONGODB_URI="mongodb://admin:secret@localhost:27017"
+export JWT_SECRET="your-local-secret"
 go run ./cmd/server
 ```
 
 ---
 
-## Testing
+## Unit Tests
 
-Tests use **testify/mock** — no real MongoDB required.
+Tests use **testify/mock** — no MongoDB or running server needed.
 
 ```bash
-# Run all tests
+# Run all tests (with names printed per test)
 go test ./... -v
 
 # Run with coverage report
@@ -43,10 +60,29 @@ go test ./... \
   -covermode=atomic \
   -coverpkg=./internal/application/...,./internal/domain/...,./internal/adapter/http/...,./pkg/...,./test/service/...
 
-go tool cover -html=coverage.out   # open HTML report
+# Print per-file coverage table (like Vitest output)
+go tool cover -func=coverage.out > func-coverage.txt
+python3 scripts/coverage-report.py coverage.out func-coverage.txt
+
+# Open interactive HTML coverage report in browser
+go tool cover -html=coverage.out
 ```
 
-Coverage threshold: **80%** (enforced in CI via `-coverpkg`).
+The per-file table looks like:
+
+```
+File                                   | % Stmts | % Funcs | % Lines | Uncovered Line #s
+---------------------------------------|---------|---------|---------|------------------
+internal/application/service.go        |   94.44 |  100.00 |   94.44 | 88,102
+internal/domain/user.go                |  100.00 |  100.00 |  100.00 |
+internal/adapter/http/handler.go       |   97.83 |  100.00 |   97.83 | 214
+pkg/auth/jwt.go                        |  100.00 |  100.00 |  100.00 |
+pkg/hash/hash.go                       |  100.00 |  100.00 |  100.00 |
+---------------------------------------|---------|---------|---------|------------------
+All files                              |   96.60 |   97.22 |   96.60 |
+```
+
+Coverage threshold: **80%** (enforced in CI).
 
 Test files:
 
