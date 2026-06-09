@@ -22,6 +22,7 @@ RUN protoc \
       --go_out=. --go_opt=paths=source_relative \
       --go-grpc_out=. --go-grpc_opt=paths=source_relative \
       proto/user/user.proto && \
+    go mod tidy && \
     CGO_ENABLED=0 GOOS=linux go build -tags grpc -o server ./cmd/server
 
 # ── Stage 2: minimal runtime ──────────────────────────────────────────────────
