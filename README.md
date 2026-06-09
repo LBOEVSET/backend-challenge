@@ -1,51 +1,62 @@
-# Backend Challenge — Implementation
+# Backend Challenge
 
 ## Quick Start
 
 ### Option 1 — Docker Compose (recommended for local dev)
 
-Runs the API + MongoDB together with one command. Credentials and URIs are wired automatically.
-
 ```bash
 docker compose up --build
-# API available at http://localhost:8080
-# gRPC available at localhost:9090
+# HTTP API: http://localhost:8080
+# gRPC:     localhost:9090
 ```
 
-Data is persisted in a Docker volume (`mongo_data`) between restarts.
+Data persists in a Docker volume (`mongo_data`) between restarts.
 
-### Option 2 — Local (requires Go 1.23+)
+### Option 2 — Local (Go 1.23+)
 
 ```bash
-# Start MongoDB with credentials
+# Start MongoDB
 docker run -d --name mongo-local -p 27017:27017 \
-  -e MONGO_INITDB_ROOT_USERNAME=<username> \
-  -e MONGO_INITDB_ROOT_PASSWORD=<password> \
+  -e MONGO_INITDB_ROOT_USERNAME=<user> \
+  -e MONGO_INITDB_ROOT_PASSWORD=<pass> \
   mongo:7
 
-# Run the backend
-export MONGODB_URI="mongodb://<username>:<password>@localhost:27017"
+# Run the API
+export MONGODB_URI="mongodb://<user>:<pass>@localhost:27017"
 export JWT_SECRET="your-secret"
 go run ./cmd/server
 ```
 
-To reuse an existing container:
-```bash
-docker start mongo-local
-```
+---
 
-### Tests
+## Testing
+
+Tests use **testify/mock** — no real MongoDB required.
 
 ```bash
 # Run all tests
 go test ./... -v
 
 # Run with coverage report
-go test ./... -coverprofile=coverage.out -covermode=atomic
-go tool cover -html=coverage.out   # open HTML report in browser
+go test ./... \
+  -coverprofile=coverage.out \
+  -covermode=atomic \
+  -coverpkg=./internal/application/...,./internal/domain/...,./internal/adapter/http/...,./pkg/...,./test/service/...
+
+go tool cover -html=coverage.out   # open HTML report
 ```
 
-Tests live in `test/service/` and use a testify mock — no real MongoDB required. Coverage threshold is **70%** (enforced in CI).
+Coverage threshold: **80%** (enforced in CI via `-coverpkg`).
+
+Test files:
+
+| Package | File | What it covers |
+|---------|------|----------------|
+| `test/service/` | `user_service_test.go` | All use cases: Register, Login, CRUD, CountUsers |
+| `test/handler/` | `handler_test.go` | Every HTTP route via `httptest` (26 tests) |
+| `pkg/auth/` | `jwt_test.go` | Token generation and validation |
+| `pkg/hash/` | `password_test.go` | bcrypt hash and check |
+| `internal/domain/` | `user_test.go` | Domain entity validation |
 
 ---
 
@@ -54,8 +65,7 @@ Tests live in `test/service/` and use a testify mock — no real MongoDB require
 ```
 cmd/server/
   main.go           ← Entry point: wires everything together
-  grpc.go           ← gRPC server start (build tag: grpc)
-  grpc_stub.go      ← No-op stub for normal builds
+  grpc.go           ← gRPC server start
 
 internal/
   domain/           ← Core entity (User) — no external deps
@@ -64,12 +74,11 @@ internal/
   adapter/
     mongodb/        ← MongoDB adapter (implements port.UserRepository)
     http/           ← Gin HTTP adapter (handlers, middleware, router)
-    grpc/           ← gRPC adapter (build tag: grpc)
+    grpc/           ← gRPC adapter
 
 proto/user/
   user.proto        ← gRPC service definition
   user.pb.go        ← Generated at Docker build time
-  user_grpc.pb.go   ← Generated at Docker build time
 
 pkg/
   auth/             ← JWT utilities (HS256, 24h TTL)
@@ -77,13 +86,14 @@ pkg/
 
 test/
   mock/             ← Testify mock for UserRepository
-  service/          ← Unit tests (no DB required)
+  service/          ← Use-case unit tests (no DB)
+  handler/          ← HTTP layer unit tests (httptest)
 
 design/
   lottery-search-system.md ← Lottery Search System design doc
 ```
 
-The application layer depends only on `port.UserRepository` — never on the MongoDB driver directly. This allows tests to swap in a mock without a real database.
+The application layer depends only on `port.UserRepository` — never on the MongoDB driver directly. Tests swap in the mock without a real database.
 
 ---
 
@@ -97,41 +107,7 @@ The application layer depends only on `port.UserRepository` — never on the Mon
 | `PORT`        | `8080`                      | HTTP listen port          |
 | `GRPC_PORT`   | `9090`                      | gRPC listen port          |
 
----
-
-## JWT — How to Generate & Use Tokens
-
-### 1. Register
-
-```bash
-curl -X POST http://localhost:8080/api/v1/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"name":"Alice","email":"alice@example.com","password":"secret123"}'
-```
-
-Response:
-```json
-{"id":"...","name":"Alice","email":"alice@example.com","created_at":"2024-01-01T00:00:00Z"}
-```
-
-### 2. Login → get token
-
-```bash
-curl -X POST http://localhost:8080/api/v1/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"alice@example.com","password":"secret123"}'
-```
-
-Response:
-```json
-{"token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."}
-```
-
-Token properties: HS256, 24-hour TTL, contains `user_id` claim.
-
-### 3. Use the token
-
-Add `Authorization: Bearer <token>` to every protected request.
+Secrets (`MONGODB_URI`, `MONGODB_DB`, `JWT_SECRET`) are stored in **Infisical** and never hardcoded in any file committed to Git. Locally, create a `.env` file (see `.env.example`); Docker Compose reads it automatically.
 
 ---
 
@@ -148,16 +124,24 @@ Add `Authorization: Bearer <token>` to every protected request.
 | PUT    | /api/v1/users/:id     | ✓    | Update name/email |
 | DELETE | /api/v1/users/:id     | ✓    | Delete user       |
 
-### Sample requests
+### Example requests
 
 ```bash
+# Register
+curl -X POST http://localhost:8080/api/v1/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Alice","email":"alice@example.com","password":"secret123"}'
+
+# Login → get token
+curl -X POST http://localhost:8080/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"alice@example.com","password":"secret123"}'
+# → {"token":"eyJ..."}
+
 TOKEN="eyJ..."
 
 # List users
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/users
-
-# Get user
-curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/users/<id>
 
 # Update
 curl -X PUT http://localhost:8080/api/v1/users/<id> \
@@ -169,20 +153,18 @@ curl -X PUT http://localhost:8080/api/v1/users/<id> \
 curl -X DELETE -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/users/<id>
 ```
 
+Token: HS256, 24-hour TTL, contains `user_id` claim. Add `Authorization: Bearer <token>` to every protected request.
+
 ---
 
 ## gRPC (Bonus)
 
-gRPC is enabled at build time via the `grpc` build tag. The Docker build generates stubs automatically from `proto/user/user.proto`.
+gRPC is enabled via the `grpc` build tag. The Docker build generates stubs from `proto/user/user.proto` automatically.
 
-Defined RPCs:
-- `UserService.CreateUser`
-- `UserService.GetUser`
-
-To build and run locally with gRPC:
+Defined RPCs: `UserService.CreateUser`, `UserService.GetUser`
 
 ```bash
-# Install protoc and plugins (once)
+# Install protoc (once)
 brew install protobuf
 go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.34.2
 go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.3.0
@@ -197,74 +179,56 @@ go build -tags grpc -o bin/server ./cmd/server
 
 ---
 
-## GKE Deployment
+## CI/CD (GKE)
 
-Push to `main` or `dev` → GitHub Actions:
-1. Builds with `docker buildx --platform linux/amd64`
-2. Pushes to `asia-southeast1-docker.pkg.dev/agentassistant-496719/assignment/backend-challenge`
-3. Rolls out to GKE namespace `assignment`
+Push to `dev` → GitHub Actions runs two jobs:
 
-MongoDB runs as a pod in the same namespace (`mongo:27017`) backed by a 2Gi PersistentVolumeClaim. The backend connects to it via K8s internal DNS — no external exposure needed.
+**Job 1 — Test & SonarQube scan:**
+1. `go test ./...` with `-coverpkg` covering application, domain, http adapter, and pkg packages
+2. Fails if total coverage < 80%
+3. SonarQube scan via `SonarSource/sonarqube-scan-action@v6` — uploads `coverage.out`
+4. Quality Gate check — fails build if gate is RED
 
-**To update the MongoDB credentials secret in GKE:**
-```bash
-kubectl create secret generic backend-challenge-secret \
-  --namespace=assignment \
-  --from-literal=MONGODB_URI="mongodb://<user>:<pass>@mongo:27017" \
-  --from-literal=JWT_SECRET="<your-secret>" \
-  --dry-run=client -o yaml | kubectl apply -f -
-
-kubectl rollout restart deployment/backend-challenge -n assignment
-```
-
-### Secrets management (Infisical)
-
-App secrets (`MONGODB_URI`, `MONGODB_DB`, `JWT_SECRET`) are stored in **Infisical** and injected at CI time — never hardcoded in any file committed to Git.
-
-- Locally: create a `.env` file (see `.env.example`). Docker Compose reads it automatically.
-- CI: the workflow fetches secrets via `Infisical/secrets-action` before the deploy steps.
+**Job 2 — Build & deploy** (runs only if Job 1 passes):
+1. Fetches secrets from Infisical
+2. Authenticates to GCP via Workload Identity Federation
+3. Builds with `docker buildx --platform linux/amd64`
+4. Pushes to `asia-southeast1-docker.pkg.dev/agentassistant-496719/assignment/backend-challenge`
+5. Rolls out to GKE namespace `assignment`
 
 **Required GitHub secrets:**
 
 | Secret | Purpose |
 |--------|---------|
-| `WIF_PROVIDER` | Workload Identity Federation for GCP auth |
-| `GCP_PROJECT_ID` | GCP project |
+| `WIF_PROVIDER` | Workload Identity Federation provider |
+| `GCP_PROJECT_ID` | GCP project ID |
 | `GKE_CLUSTER` | GKE cluster name |
 | `GKE_ZONE` | GKE cluster zone |
-| `INFISICAL_CLIENT_ID` | Infisical machine identity |
+| `INFISICAL_CLIENT_ID` | Infisical machine identity ID |
 | `INFISICAL_CLIENT_SECRET` | Infisical machine identity secret |
 | `INFISICAL_PROJECT_SLUG` | Infisical project slug |
-| `SONARQUBE_URL` | External URL of the SonarQube instance on GKE |
+| `SONARQUBE_URL` | `http://<sonarqube-external-ip>:9000` |
 | `SONARQUBE_TOKEN` | SonarQube analysis token |
 
 **Live URL:** `http://8.233.137.90`
 
 ---
 
-## SonarQube (Code Quality & Security)
+## SonarQube
 
-SonarQube Community Edition runs in the `assignment` namespace on GKE.
+SonarQube Community Edition (v26.6.0) runs in the `assignment` namespace on GKE at `http://34.143.211.72:9000`.
 
-**Deploy (first time):**
+**What's analyzed:** `internal/application`, `internal/domain`, `internal/adapter/http`, `pkg/auth`, `pkg/hash`
+
+**Excluded from analysis** (require integration tests or are entry points): `cmd/`, `internal/adapter/mongodb/`, `internal/adapter/grpc/`, `test/mock/`
+
+**Quality Gate:** Fails the build if coverage on analyzed files drops below threshold or new bugs/vulnerabilities are introduced.
+
+To re-deploy SonarQube:
 ```bash
 kubectl apply -f k8s/sonarqube.yaml
-# Wait for the LoadBalancer to get an external IP
-kubectl get svc sonarqube -n assignment
+kubectl get svc sonarqube -n assignment   # wait for external IP
 ```
-
-**Initial setup:**
-1. Open the SonarQube UI at `http://<EXTERNAL-IP>:9000` (default login `admin`/`admin`, change on first login).
-2. Create a project with key `backend-challenge`.
-3. Generate an analysis token and save it as `SONARQUBE_TOKEN` in GitHub secrets.
-4. Save `http://<EXTERNAL-IP>:9000` as `SONARQUBE_URL` in GitHub secrets.
-
-**Quality Gate (enforced in CI):**
-The `sonarqube-quality-gate-action` fails the build if the default Quality Gate is RED.  Typical causes and fixes:
-
-- **Coverage below 70% on new code** → add tests for the changed lines, re-push.
-- **New bugs / vulnerabilities** → check the SonarQube dashboard for the issue location and fix it.
-- **Security hotspots** → review on the dashboard and mark as safe or fix in code.
 
 ---
 
@@ -278,19 +242,17 @@ See [`design/lottery-search-system.md`](design/lottery-search-system.md) for the
 
 ## Overview
 
-| Section | Focus | Submission Type |
-|---------|-------|-----------------|
-| User Management API | Build a Golang user management API with MongoDB and JWT authentication | Code implementation |
-| Lottery Search System | Design a real-world lottery ticket search solution with wildcard matching | Design proposal only (no code) |
+| Section | Focus | Submission |
+|---------|-------|------------|
+| User Management API | Go API with MongoDB and JWT authentication | Code |
+| Lottery Search System | Wildcard lottery ticket search — Redis bitmap design | Design doc |
 
-## User Management API
-
-### Requirements
+## User Management API Requirements
 
 1. **User Model** — ID, Name, Email, Password (hashed), CreatedAt
 2. **Authentication** — Register, Login → JWT (HS256), middleware-protected routes
 3. **User Operations** — Create, Get by ID, List, Update, Delete
-4. **MongoDB Integration** — official Go driver, persist/retrieve users
+4. **MongoDB Integration** — official Go driver
 5. **Middleware** — logging (method, path, execution time)
 6. **Concurrency** — background goroutine every 10s to log user count
 7. **Testing** — unit tests with mocked MongoDB
@@ -305,6 +267,8 @@ See [`design/lottery-search-system.md`](design/lottery-search-system.md) for the
 | Graceful shutdown via `context.Context` | ✓ |
 | gRPC (`CreateUser`, `GetUser`) | ✓ |
 | Hexagonal architecture (domain / port / application / adapter) | ✓ |
+| Unit tests — 80%+ coverage (SonarQube verified) | ✓ |
+| SonarQube code quality gate in CI | ✓ |
 
 ## Lottery Search System
 
