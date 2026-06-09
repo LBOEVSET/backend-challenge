@@ -37,8 +37,15 @@ docker start mongo-local
 ### Tests
 
 ```bash
+# Run all tests
 go test ./... -v
+
+# Run with coverage report
+go test ./... -coverprofile=coverage.out -covermode=atomic
+go tool cover -html=coverage.out   # open HTML report in browser
 ```
+
+Tests live in `test/service/` and use a testify mock — no real MongoDB required. Coverage threshold is **70%** (enforced in CI).
 
 ---
 
@@ -210,9 +217,54 @@ kubectl create secret generic backend-challenge-secret \
 kubectl rollout restart deployment/backend-challenge -n assignment
 ```
 
-**Required GitHub secrets:** `GCP_PROJECT_ID`, `GKE_CLUSTER`, `GKE_ZONE`, `WIF_PROVIDER`, `MONGODB_URI`, `JWT_SECRET`
+### Secrets management (Infisical)
+
+App secrets (`MONGODB_URI`, `MONGODB_DB`, `JWT_SECRET`) are stored in **Infisical** and injected at CI time — never hardcoded in any file committed to Git.
+
+- Locally: create a `.env` file (see `.env.example`). Docker Compose reads it automatically.
+- CI: the workflow fetches secrets via `Infisical/secrets-action` before the deploy steps.
+
+**Required GitHub secrets:**
+
+| Secret | Purpose |
+|--------|---------|
+| `WIF_PROVIDER` | Workload Identity Federation for GCP auth |
+| `GCP_PROJECT_ID` | GCP project |
+| `GKE_CLUSTER` | GKE cluster name |
+| `GKE_ZONE` | GKE cluster zone |
+| `INFISICAL_CLIENT_ID` | Infisical machine identity |
+| `INFISICAL_CLIENT_SECRET` | Infisical machine identity secret |
+| `INFISICAL_PROJECT_SLUG` | Infisical project slug |
+| `SONARQUBE_URL` | External URL of the SonarQube instance on GKE |
+| `SONARQUBE_TOKEN` | SonarQube analysis token |
 
 **Live URL:** `http://8.233.137.90`
+
+---
+
+## SonarQube (Code Quality & Security)
+
+SonarQube Community Edition runs in the `assignment` namespace on GKE.
+
+**Deploy (first time):**
+```bash
+kubectl apply -f k8s/sonarqube.yaml
+# Wait for the LoadBalancer to get an external IP
+kubectl get svc sonarqube -n assignment
+```
+
+**Initial setup:**
+1. Open the SonarQube UI at `http://<EXTERNAL-IP>:9000` (default login `admin`/`admin`, change on first login).
+2. Create a project with key `backend-challenge`.
+3. Generate an analysis token and save it as `SONARQUBE_TOKEN` in GitHub secrets.
+4. Save `http://<EXTERNAL-IP>:9000` as `SONARQUBE_URL` in GitHub secrets.
+
+**Quality Gate (enforced in CI):**
+The `sonarqube-quality-gate-action` fails the build if the default Quality Gate is RED.  Typical causes and fixes:
+
+- **Coverage below 70% on new code** → add tests for the changed lines, re-push.
+- **New bugs / vulnerabilities** → check the SonarQube dashboard for the issue location and fix it.
+- **Security hotspots** → review on the dashboard and mark as safe or fix in code.
 
 ---
 

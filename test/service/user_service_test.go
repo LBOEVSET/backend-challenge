@@ -171,6 +171,153 @@ func TestDeleteUser_NotFound(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// ── ListUsers ─────────────────────────────────────────────────────────────────
+
+func TestListUsers_Success(t *testing.T) {
+	repo := new(repoMock.UserRepository)
+	svc  := newService(repo)
+
+	users := []*domain.User{
+		{ID: "1", Name: "Alice", Email: "alice@example.com"},
+		{ID: "2", Name: "Bob",   Email: "bob@example.com"},
+	}
+	repo.On("FindAll", mock.Anything).Return(users, nil)
+
+	result, err := svc.ListUsers(context.Background())
+	assert.NoError(t, err)
+	assert.Len(t, result, 2)
+	assert.Equal(t, "Alice", result[0].Name)
+	assert.Equal(t, "Bob",   result[1].Name)
+	repo.AssertExpectations(t)
+}
+
+func TestListUsers_Empty(t *testing.T) {
+	repo := new(repoMock.UserRepository)
+	svc  := newService(repo)
+
+	repo.On("FindAll", mock.Anything).Return([]*domain.User{}, nil)
+
+	result, err := svc.ListUsers(context.Background())
+	assert.NoError(t, err)
+	assert.Empty(t, result)
+}
+
+func TestListUsers_RepoError(t *testing.T) {
+	repo := new(repoMock.UserRepository)
+	svc  := newService(repo)
+
+	repo.On("FindAll", mock.Anything).Return([]*domain.User(nil), errors.New("db error"))
+
+	_, err := svc.ListUsers(context.Background())
+	assert.Error(t, err)
+}
+
+// ── UpdateUser ────────────────────────────────────────────────────────────────
+
+func TestUpdateUser_NameOnly(t *testing.T) {
+	repo := new(repoMock.UserRepository)
+	svc  := newService(repo)
+
+	newName := "Updated Name"
+	updated := &domain.User{ID: "1", Name: newName, Email: "alice@example.com"}
+
+	repo.On("Update", mock.Anything, "1", domain.UpdateFields{Name: &newName, Email: nil}).
+		Return(updated, nil)
+
+	result, err := svc.UpdateUser(context.Background(), "1", application.UpdateInput{Name: &newName})
+	assert.NoError(t, err)
+	assert.Equal(t, newName, result.Name)
+	repo.AssertExpectations(t)
+}
+
+func TestUpdateUser_EmailOnly(t *testing.T) {
+	repo := new(repoMock.UserRepository)
+	svc  := newService(repo)
+
+	newEmail := "new@example.com"
+	updated := &domain.User{ID: "1", Name: "Alice", Email: newEmail}
+
+	repo.On("Update", mock.Anything, "1", domain.UpdateFields{Name: nil, Email: &newEmail}).
+		Return(updated, nil)
+
+	result, err := svc.UpdateUser(context.Background(), "1", application.UpdateInput{Email: &newEmail})
+	assert.NoError(t, err)
+	assert.Equal(t, newEmail, result.Email)
+	repo.AssertExpectations(t)
+}
+
+func TestUpdateUser_BothFields(t *testing.T) {
+	repo := new(repoMock.UserRepository)
+	svc  := newService(repo)
+
+	newName  := "Carol"
+	newEmail := "carol@example.com"
+	updated  := &domain.User{ID: "2", Name: newName, Email: newEmail}
+
+	repo.On("Update", mock.Anything, "2", domain.UpdateFields{Name: &newName, Email: &newEmail}).
+		Return(updated, nil)
+
+	result, err := svc.UpdateUser(context.Background(), "2", application.UpdateInput{
+		Name: &newName, Email: &newEmail,
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, newName, result.Name)
+	assert.Equal(t, newEmail, result.Email)
+}
+
+func TestUpdateUser_NotFound(t *testing.T) {
+	repo := new(repoMock.UserRepository)
+	svc  := newService(repo)
+
+	repo.On("Update", mock.Anything, "999", mock.Anything).
+		Return(nil, errors.New("user not found"))
+
+	_, err := svc.UpdateUser(context.Background(), "999", application.UpdateInput{})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
+// ── CreateUser ────────────────────────────────────────────────────────────────
+
+func TestCreateUser_Success(t *testing.T) {
+	repo := new(repoMock.UserRepository)
+	svc  := newService(repo)
+
+	repo.On("FindByEmail", mock.Anything, "dave@example.com").Return(nil, nil)
+	repo.On("Create", mock.Anything, mock.AnythingOfType("*domain.User")).Return(nil)
+
+	user, err := svc.CreateUser(context.Background(), application.CreateInput{
+		Name:     "Dave",
+		Email:    "dave@example.com",
+		Password: "pass1234",
+	})
+
+	assert.NoError(t, err)
+	assert.Equal(t, "Dave", user.Name)
+	assert.Equal(t, "dave@example.com", user.Email)
+	assert.NotEmpty(t, user.ID)
+	assert.NotEmpty(t, user.Password) // stored as hash, not plaintext
+	assert.NotEqual(t, "pass1234", user.Password)
+	repo.AssertExpectations(t)
+}
+
+func TestCreateUser_DuplicateEmail(t *testing.T) {
+	repo := new(repoMock.UserRepository)
+	svc  := newService(repo)
+
+	existing := &domain.User{ID: "x", Email: "dave@example.com"}
+	repo.On("FindByEmail", mock.Anything, "dave@example.com").Return(existing, nil)
+
+	_, err := svc.CreateUser(context.Background(), application.CreateInput{
+		Name:     "Dave2",
+		Email:    "dave@example.com",
+		Password: "pass1234",
+	})
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "already registered")
+}
+
 // ── CountUsers ────────────────────────────────────────────────────────────────
 
 func TestCountUsers(t *testing.T) {
@@ -182,4 +329,14 @@ func TestCountUsers(t *testing.T) {
 	count, err := svc.CountUsers(context.Background())
 	assert.NoError(t, err)
 	assert.Equal(t, int64(42), count)
+}
+
+func TestCountUsers_RepoError(t *testing.T) {
+	repo := new(repoMock.UserRepository)
+	svc  := newService(repo)
+
+	repo.On("Count", mock.Anything).Return(int64(0), errors.New("connection lost"))
+
+	_, err := svc.CountUsers(context.Background())
+	assert.Error(t, err)
 }
