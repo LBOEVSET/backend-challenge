@@ -2,18 +2,29 @@
 
 ## Quick Start
 
-### Docker (recommended)
+### Option 1 — Docker Compose (recommended)
+
+Runs the API + MongoDB together with one command:
 
 ```bash
-# Set your MongoDB Atlas URI in docker-compose or env
-MONGODB_URI="mongodb+srv://..." docker compose up --build
+docker compose up --build
 # API available at http://localhost:8080
+# gRPC available at localhost:9090
 ```
 
-### Local (requires Go 1.22+)
+Data is persisted in a Docker volume (`mongo_data`) between restarts.
+
+### Option 2 — Local (requires Go 1.23+ and a running MongoDB)
 
 ```bash
-export MONGODB_URI="mongodb+srv://..."
+# Start MongoDB locally (if not already running)
+docker run -d --name mongo-local -p 27017:27017 \
+  -e MONGO_INITDB_ROOT_USERNAME=lboevset \
+  -e MONGO_INITDB_ROOT_PASSWORD=20011966 \
+  mongo:7
+
+# Run the backend
+export MONGODB_URI="mongodb://lboevset:20011966@localhost:27017"
 export JWT_SECRET="your-secret"
 go run ./cmd/server
 ```
@@ -29,21 +40,50 @@ go test ./... -v
 ## Architecture — Hexagonal (Ports & Adapters)
 
 ```
-cmd/server/            ← Entry point: wires everything together
+cmd/server/
+  main.go           ← Entry point: wires everything together
+  grpc.go           ← gRPC server start (build tag: grpc)
+  grpc_stub.go      ← No-op stub for normal builds
+
 internal/
-  domain/              ← Core entity (User) — no external deps
-  port/                ← Interface: UserRepository (the port)
-  application/         ← Use cases: Register, Login, CRUD
+  domain/           ← Core entity (User) — no external deps
+  port/             ← Interface: UserRepository (the port)
+  application/      ← Use cases: Register, Login, CRUD, CountUsers
   adapter/
-    mongodb/           ← MongoDB adapter (implements port)
-    http/              ← Gin HTTP adapter (handler, middleware, router)
-proto/user.proto       ← gRPC definition (run `make proto` to generate)
-pkg/auth/              ← JWT utilities (HS256)
-pkg/hash/              ← bcrypt helpers
-test/mock/             ← Testify mock for UserRepository
-test/service/          ← Unit tests (no DB required)
-design/                ← Lottery Search System design doc
+    mongodb/        ← MongoDB adapter (implements port.UserRepository)
+    http/           ← Gin HTTP adapter (handlers, middleware, router)
+    grpc/           ← gRPC adapter (build tag: grpc)
+
+proto/user/
+  user.proto        ← gRPC service definition
+  user.pb.go        ← Generated at Docker build time
+  user_grpc.pb.go   ← Generated at Docker build time
+
+pkg/
+  auth/             ← JWT utilities (HS256, 24h TTL)
+  hash/             ← bcrypt helpers
+
+test/
+  mock/             ← Testify mock for UserRepository
+  service/          ← Unit tests (no DB required)
+
+design/
+  lottery-search-system.md ← Lottery Search System design doc
 ```
+
+The application layer depends only on `port.UserRepository` — never on the MongoDB driver directly. This allows tests to swap in a mock without a real database.
+
+---
+
+## Environment Variables
+
+| Variable      | Default                      | Description              |
+|---------------|------------------------------|--------------------------|
+| `MONGODB_URI` | `mongodb://localhost:27017`  | MongoDB connection string |
+| `MONGODB_DB`  | `assignment`                 | Database name            |
+| `JWT_SECRET`  | `change-me-in-production`    | HMAC signing key         |
+| `PORT`        | `8080`                       | HTTP listen port         |
+| `GRPC_PORT`   | `9090`                       | gRPC listen port         |
 
 ---
 
@@ -86,15 +126,15 @@ Add `Authorization: Bearer <token>` to every protected request.
 ## API Reference
 
 | Method | Path | Auth | Description |
-|---|---|---|---|
-| GET | /api/v1/health | — | Health check |
-| POST | /api/v1/auth/register | — | Register new user |
-| POST | /api/v1/auth/login | — | Login → JWT |
-| POST | /api/v1/users | ✓ | Create user |
-| GET | /api/v1/users | ✓ | List all users |
-| GET | /api/v1/users/:id | ✓ | Get user by ID |
-| PUT | /api/v1/users/:id | ✓ | Update name/email |
-| DELETE | /api/v1/users/:id | ✓ | Delete user |
+|--------|------|------|-------------|
+| GET    | /api/v1/health        | —  | Health check        |
+| POST   | /api/v1/auth/register | —  | Register new user   |
+| POST   | /api/v1/auth/login    | —  | Login → JWT         |
+| POST   | /api/v1/users         | ✓  | Create user         |
+| GET    | /api/v1/users         | ✓  | List all users      |
+| GET    | /api/v1/users/:id     | ✓  | Get user by ID      |
+| PUT    | /api/v1/users/:id     | ✓  | Update name/email   |
+| DELETE | /api/v1/users/:id     | ✓  | Delete user         |
 
 ### Sample requests
 
@@ -121,22 +161,40 @@ curl -X DELETE -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/us
 
 ## gRPC (Bonus)
 
-The `proto/user.proto` file defines `CreateUser` and `GetUser` RPCs.
+gRPC is enabled at build time via the `grpc` build tag. The Docker build generates stubs automatically from `proto/user/user.proto`.
 
-To generate Go stubs and enable the gRPC server:
+Defined RPCs:
+- `UserService.CreateUser`
+- `UserService.GetUser`
+
+To build and run locally with gRPC:
 
 ```bash
 # Install protoc and plugins (once)
 brew install protobuf
-go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.34.2
+go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.3.0
 
-# Generate
+# Generate stubs
 make proto
 
 # Build with gRPC enabled
 go build -tags grpc -o bin/server ./cmd/server
+./bin/server
 ```
+
+---
+
+## GKE Deployment
+
+Push to `main` or `dev` → GitHub Actions:
+1. Builds with `docker buildx --platform linux/amd64`
+2. Pushes to `asia-southeast1-docker.pkg.dev/agentassistant-496719/assignment/backend-challenge`
+3. Rolls out to GKE namespace `assignment`
+
+MongoDB runs as a pod in the same namespace (`mongo:27017`) backed by a PersistentVolumeClaim.
+
+**Required GitHub secrets:** `GCP_PROJECT_ID`, `GKE_CLUSTER`, `GKE_ZONE`, `WIF_PROVIDER`, `MONGODB_URI`, `JWT_SECRET`
 
 ---
 
@@ -153,21 +211,15 @@ See [`design/lottery-search-system.md`](design/lottery-search-system.md).
 This coding test has two parts.
 
 | Section | Focus | Submission Type |
-| --- | --- | --- |
+|---------|-------|-----------------|
 | User Management API | Build a Golang user management API with MongoDB and JWT authentication | Code implementation |
 | Lottery Search System | Design a real-world lottery ticket search solution with wildcard matching | Design proposal only (no code) |
 
 ## User Management API
 
-### Objective (User Management API)
-
-Build a RESTful API in Golang to manage users, using MongoDB for persistence, JWT for authentication, and clean code practices.
-
-### Requirements (User Management API)
+### Requirements
 
 #### 1. User Model
-
-Define a user entity with the following fields:
 
 - `ID` (auto-generated)
 - `Name` (string)
@@ -177,26 +229,14 @@ Define a user entity with the following fields:
 
 #### 2. Authentication
 
-Implement:
-
 - User registration
 - User authentication that returns a JWT token
-
-JWT requirements:
-
-- Protect endpoints with JWT
-- Validate tokens via middleware
+- Protect endpoints with JWT middleware
 - Sign tokens using HMAC (`HS256`) with a secret key
 
 #### 3. User Operations
 
-Implement the following operations:
-
-- Create a new user
-- Fetch a user by ID
-- List all users
-- Update a user's name or email
-- Delete a user
+- Create, fetch by ID, list all, update name/email, delete
 
 #### 4. MongoDB Integration
 
@@ -205,107 +245,26 @@ Implement the following operations:
 
 #### 5. Middleware
 
-- Implement logging middleware to capture HTTP method, path, and execution time
+- Logging middleware: HTTP method, path, execution time
 
 #### 6. Concurrency Task
 
-- Run a background goroutine every 10 seconds to log the total number of users in the database
+- Background goroutine every 10 seconds to log total user count
 
 #### 7. Testing
 
-- Write unit tests using Go's standard `testing` package
-- Mock MongoDB interactions where appropriate
+- Unit tests using Go's `testing` package
+- Mock MongoDB interactions
 
-### Bonus (Optional, User Management API)
+### Bonus
 
-- **Containerization**: Add Docker and `docker-compose` support for the API and MongoDB
-- **Abstraction**: Use Go interfaces to abstract MongoDB operations for better testability
-- **Validation**: Implement input validation (for example, required fields and email format)
-- **Graceful Shutdown**: Handle system signals using `context.Context`
-- **gRPC Support**:
-  - Define a `.proto` file for `CreateUser` and `GetUser`
-  - Implement a gRPC server (optionally secure with token metadata)
-- **Hexagonal Architecture**:
-  - Structure the project using ports and adapters
-  - Separate domain, application, and infrastructure layers
-  - Decouple business logic from frameworks and drivers
-
-### Deliverables (User Management API)
-
-Provide a Git repository containing:
-
-- `README.md` with setup and execution instructions
-- A guide explaining how to generate and use JWT tokens
-- Sample API requests and responses
-- Documentation of assumptions or design decisions
-
-### Evaluation Criteria (User Management API)
-
-- Code quality, structure, and readability
-- Correctness and completeness of the REST API
-- Security and implementation of JWT
-- Proper usage and abstraction of MongoDB
-- Test coverage and effective mocking
-- Idiomatic Go usage
-- Bonus implementations (gRPC, Docker, validation, architecture)
+- Containerization (Docker + docker-compose) ✓
+- Go interfaces to abstract MongoDB operations ✓
+- Input validation ✓
+- Graceful shutdown ✓
+- gRPC support ✓
+- Hexagonal architecture ✓
 
 ## Lottery Search System
 
-### Objective (Lottery Search System)
-
-Design a real-world solution to search a large dataset of lottery tickets using pattern matching with wildcard support.
-
-> This section is a design exercise. Do not implement code.
-
-### Requirements (Lottery Search System)
-
-#### 1. Data Volume
-
-- Handle a dataset of **1 million** lottery tickets
-- Each ticket is a 6-digit number
-
-#### 2. Search Pattern
-
-- Support a 6-character search pattern containing digits and wildcards (`*`)
-- Example patterns:
-
-| Pattern | Matches |
-| --- | --- |
-| `****23` | Numbers ending in `23` |
-| `1****5` | Numbers starting with `1` and ending with `5` |
-| `123***` | Numbers starting with `123` |
-
-#### 3. Result Distribution
-
-- Constraint: the same search pattern should not return the same ticket to multiple users at the same time
-- Propose a distribution mechanism so matching tickets are assigned without duplicate simultaneous selection
-
-#### 4. Performance
-
-- Ensure the search is performant for `1M+` records
-- Propose an efficient approach for querying and allocation
-
-#### 5. Real-World Design Proposal (No Code Required)
-
-- Recommend the database/storage technology you would use in production and explain why
-- Describe the algorithm and indexing strategy used for wildcard pattern matching
-- Explain how you would prevent duplicate simultaneous results for the same pattern (for example, locking, reservation, or atomic allocation)
-- No code implementation is required; provide a solution/design only
-
-### Deliverables (Lottery Search System)
-
-Submit a design document only (no code implementation) that includes:
-
-- Proposed solution architecture, data structures, and algorithms
-- Recommended production database/storage choice with justification (for example, query performance, concurrency handling, operational simplicity)
-- Performance analysis summarizing efficiency and tradeoffs
-- Concurrency/distribution strategy explaining how duplicate results are avoided for the same pattern
-
-### Evaluation Criteria (Lottery Search System)
-
-- Feasibility: the solution addresses the stated requirements
-- Performance: the search approach is efficient for the target scale
-- Correctness: the distribution constraint is handled correctly
-- Real-world practicality: the database/storage and concurrency approach are appropriate for production use
-- Creativity: thoughtful use of data structures and algorithms
-
+See [`design/lottery-search-system.md`](design/lottery-search-system.md) for the full design proposal.
