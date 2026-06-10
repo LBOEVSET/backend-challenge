@@ -36,28 +36,7 @@ type RegisterInput struct {
 
 // Register creates a new user account and returns the created user.
 func (s *UserService) Register(ctx context.Context, in RegisterInput) (*domain.User, error) {
-	// Duplicate email check
-	existing, _ := s.repo.FindByEmail(ctx, in.Email)
-	if existing != nil {
-		return nil, errors.New("email already registered")
-	}
-
-	hashed, err := hash.Password(in.Password)
-	if err != nil {
-		return nil, err
-	}
-
-	user := &domain.User{
-		ID:        uuid.NewString(),
-		Name:      in.Name,
-		Email:     in.Email,
-		Password:  hashed,
-		CreatedAt: time.Now().UTC(),
-	}
-	if err := s.repo.Create(ctx, user); err != nil {
-		return nil, err
-	}
-	return user, nil
+	return s.newUser(ctx, in.Name, in.Email, in.Password)
 }
 
 // LoginInput holds the credentials for authentication.
@@ -89,18 +68,24 @@ type CreateInput struct {
 
 // CreateUser creates a user (protected route — caller is already authenticated).
 func (s *UserService) CreateUser(ctx context.Context, in CreateInput) (*domain.User, error) {
-	existing, _ := s.repo.FindByEmail(ctx, in.Email)
+	return s.newUser(ctx, in.Name, in.Email, in.Password)
+}
+
+// newUser is the shared implementation used by both Register and CreateUser.
+// It checks for duplicate email, hashes the password, persists, and returns the user.
+func (s *UserService) newUser(ctx context.Context, name, email, password string) (*domain.User, error) {
+	existing, _ := s.repo.FindByEmail(ctx, email)
 	if existing != nil {
 		return nil, errors.New("email already registered")
 	}
-	hashed, err := hash.Password(in.Password)
+	hashed, err := hash.Password(password)
 	if err != nil {
 		return nil, err
 	}
 	user := &domain.User{
 		ID:        uuid.NewString(),
-		Name:      in.Name,
-		Email:     in.Email,
+		Name:      name,
+		Email:     email,
 		Password:  hashed,
 		CreatedAt: time.Now().UTC(),
 	}
