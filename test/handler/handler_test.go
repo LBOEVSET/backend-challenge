@@ -28,11 +28,15 @@ func init() {
 	gin.SetMode(gin.TestMode)
 }
 
-// newRouter creates a fresh Gin router backed by a mock repo for each test.
+// newRouter creates a fresh Gin router backed by mock repos for each test.
+// The visitor repository mock is wired in but calls are not asserted —
+// visitor tracking is tested separately in the middleware test.
 func newRouter() (*gin.Engine, *mockRepo.UserRepository) {
 	repo := new(mockRepo.UserRepository)
+	visitorRepo := new(mockRepo.VisitorRepository)
+	visitorRepo.On("Upsert", mock.Anything, mock.Anything).Return(nil)
 	svc := application.NewUserService(repo, testSecret)
-	router := httpAdapter.NewRouter(svc, testSecret)
+	router := httpAdapter.NewRouter(svc, testSecret, visitorRepo)
 	return router, repo
 }
 
