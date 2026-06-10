@@ -44,6 +44,11 @@ func main() {
 		log.Fatalf("NewUserRepository: %v", err)
 	}
 
+	visitorRepo, err := mongodb.NewVisitorRepository(db)
+	if err != nil {
+		log.Fatalf("NewVisitorRepository: %v", err)
+	}
+
 	// ── Application layer ────────────────────────────────────────────────────
 	svc := application.NewUserService(repo, jwtSecret)
 
@@ -65,7 +70,7 @@ func main() {
 	startGRPC(svc, grpcPort)
 
 	// ── HTTP server ───────────────────────────────────────────────────────────
-	router := httpadapter.NewRouter(svc, jwtSecret)
+	router := httpadapter.NewRouter(svc, jwtSecret, visitorRepo)
 	srv := &http.Server{
 		Addr:    ":" + port,
 		Handler: router,

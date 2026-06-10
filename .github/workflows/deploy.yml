@@ -14,6 +14,12 @@ env:
   DEPLOY:     backend-challenge
   NS:         assignment
 
+# Only one SonarQube scan runs at a time across all repos.
+# If two pushes happen simultaneously, the second queues until the first finishes.
+concurrency:
+  group: sonarqube-scan
+  cancel-in-progress: false
+
 jobs:
   # ── Job 1: Test + SonarQube scan ──────────────────────────────────────────
   test-and-scan:
