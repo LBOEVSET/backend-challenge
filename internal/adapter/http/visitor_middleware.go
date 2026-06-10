@@ -22,6 +22,12 @@ func VisitorTracker(repo port.VisitorRepository) gin.HandlerFunc {
 		// Capture values before the goroutine runs (gin.Context is reused)
 		ip := extractIP(c)
 		ua := c.Request.UserAgent()
+
+		// Skip internal health-check bots — they're not real visitors.
+		if isInternalBot(ua) {
+			return
+		}
+
 		now := time.Now().UTC()
 
 		go func() {
@@ -51,6 +57,11 @@ func VisitorTracker(repo port.VisitorRepository) gin.HandlerFunc {
 			}
 		}()
 	}
+}
+
+// isInternalBot returns true for GKE/Kubernetes automated health-check agents.
+func isInternalBot(ua string) bool {
+	return strings.HasPrefix(ua, "GoogleHC/") || strings.HasPrefix(ua, "kube-probe/")
 }
 
 // extractIP returns the real client IP, respecting common proxy headers.

@@ -84,6 +84,35 @@ func TestVisitorMiddleware_XRealIP(t *testing.T) {
 	vr.AssertCalled(t, "Upsert", mock.Anything, mock.Anything)
 }
 
+// ── Bot filtering ────────────────────────────────────────────────────────────
+
+func TestVisitorMiddleware_GoogleHC_Skipped(t *testing.T) {
+	vr := new(mockRepo.VisitorRepository)
+	// Upsert must NOT be called for health-check bots.
+
+	router := newRouterWithVisitor(vr)
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/api/v1/health", nil)
+	req.Header.Set("User-Agent", "GoogleHC/1.0")
+	router.ServeHTTP(w, req)
+
+	time.Sleep(50 * time.Millisecond)
+	vr.AssertNotCalled(t, "Upsert", mock.Anything, mock.Anything)
+}
+
+func TestVisitorMiddleware_KubeProbe_Skipped(t *testing.T) {
+	vr := new(mockRepo.VisitorRepository)
+
+	router := newRouterWithVisitor(vr)
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/api/v1/health", nil)
+	req.Header.Set("User-Agent", "kube-probe/1.35")
+	router.ServeHTTP(w, req)
+
+	time.Sleep(50 * time.Millisecond)
+	vr.AssertNotCalled(t, "Upsert", mock.Anything, mock.Anything)
+}
+
 // ── Device / OS / Browser detection (via exported helpers or end-to-end) ──────
 // These exercise the parse* helpers indirectly through the middleware goroutine.
 
