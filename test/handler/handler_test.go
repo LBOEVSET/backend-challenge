@@ -40,9 +40,15 @@ func newRouter() (*gin.Engine, *mockRepo.UserRepository) {
 	return router, repo
 }
 
-// authHeader generates a valid "Bearer <token>" header value.
+// authHeader generates a valid "Bearer <token>" header for a regular user.
 func authHeader(userID string) string {
-	token, _ := auth.GenerateToken(userID, testSecret)
+	token, _ := auth.GenerateToken(userID, domain.RoleUser, testSecret)
+	return "Bearer " + token
+}
+
+// authHeaderAdmin generates a valid "Bearer <token>" header for an admin user.
+func authHeaderAdmin(userID string) string {
+	token, _ := auth.GenerateToken(userID, domain.RoleAdmin, testSecret)
 	return "Bearer " + token
 }
 
@@ -116,7 +122,7 @@ func TestRegister_DuplicateEmail(t *testing.T) {
 func TestLogin_Success(t *testing.T) {
 	router, repo := newRouter()
 	hashed, _ := hash.Password("pass123")
-	user := &domain.User{ID: "u1", Email: "alice@example.com", Password: hashed}
+	user := &domain.User{ID: "u1", Email: "alice@example.com", Password: hashed, Role: domain.RoleUser}
 	repo.On("FindByEmail", mock.Anything, "alice@example.com").Return(user, nil)
 
 	w := httptest.NewRecorder()
@@ -129,6 +135,7 @@ func TestLogin_Success(t *testing.T) {
 	var resp map[string]string
 	json.Unmarshal(w.Body.Bytes(), &resp) //nolint:errcheck
 	assert.NotEmpty(t, resp["token"])
+	assert.Equal(t, domain.RoleUser, resp["role"])
 }
 
 func TestLogin_InvalidBody(t *testing.T) {
@@ -198,7 +205,7 @@ func TestAuth_InvalidToken(t *testing.T) {
 func TestAuth_WrongSecret(t *testing.T) {
 	router, _ := newRouter()
 	// Token signed with a different secret — should be rejected.
-	token, _ := auth.GenerateToken("u1", "wrong-secret")
+	token, _ := auth.GenerateToken("u1", domain.RoleUser, "wrong-secret")
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest(http.MethodGet, "/api/v1/users", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -299,10 +306,11 @@ func TestCreateUser_InvalidBody(t *testing.T) {
 
 // ── UpdateUser ───────────────────────────────────────────────────────────────
 
+// User role: can update their own account.
 func TestUpdateUser_Success(t *testing.T) {
 	router, repo := newRouter()
 	name := "Bob Updated"
-	updated := &domain.User{ID: "u1", Name: name}
+	updated := &domain.User{ID: "u1", Name: name, Role: domain.RoleUser}
 	repo.On("Update", mock.Anything, "u1", mock.Anything).Return(updated, nil)
 
 	w := httptest.NewRecorder()
@@ -314,6 +322,19 @@ func TestUpdateUser_Success(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 }
 
+// User role: cannot update another user → 403.
+func TestUpdateUser_Forbidden(t *testing.T) {
+	router, _ := newRouter()
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPut, "/api/v1/users/other-user",
+		jsonBody(map[string]string{"name": "Hacker"}))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", authHeader("u1")) // u1 (user) trying to modify other-user
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusForbidden, w.Code)
+}
+
+// User role: own account not found → 404.
 func TestUpdateUser_NotFound(t *testing.T) {
 	router, repo := newRouter()
 	repo.On("Update", mock.Anything, "notexist", mock.Anything).Return(nil, errors.New("not found"))
@@ -322,19 +343,58 @@ func TestUpdateUser_NotFound(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPut, "/api/v1/users/notexist",
 		jsonBody(map[string]string{"name": "XY"}))
 	req.Header.Set("Content-Type", "application/json")
-	// Token user must match the param for ownership check to pass.
+	// Token user must match the param so the user-role ownership check passes.
 	req.Header.Set("Authorization", authHeader("notexist"))
 	router.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
-func TestUpdateUser_Forbidden(t *testing.T) {
-	router, _ := newRouter()
+// Admin role: can update their own account (self-edit always allowed).
+func TestUpdateUser_AdminCanEditSelf(t *testing.T) {
+	router, repo := newRouter()
+	name := "Self Updated"
+	updated := &domain.User{ID: "admin-u1", Name: name, Role: domain.RoleAdmin}
+	// No FindByID call — self-edit short-circuits the role check.
+	repo.On("Update", mock.Anything, "admin-u1", mock.Anything).Return(updated, nil)
+
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest(http.MethodPut, "/api/v1/users/other-user",
-		jsonBody(map[string]string{"name": "Hacker"}))
+	req, _ := http.NewRequest(http.MethodPut, "/api/v1/users/admin-u1",
+		jsonBody(map[string]string{"name": name}))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", authHeader("u1")) // u1 trying to modify other-user
+	req.Header.Set("Authorization", authHeaderAdmin("admin-u1"))
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+}
+
+// Admin role: can update a user-role account.
+func TestUpdateUser_AdminCanEditUser(t *testing.T) {
+	router, repo := newRouter()
+	name := "Updated by Admin"
+	target := &domain.User{ID: "target-user", Name: "Target", Role: domain.RoleUser}
+	updated := &domain.User{ID: "target-user", Name: name, Role: domain.RoleUser}
+	repo.On("FindByID", mock.Anything, "target-user").Return(target, nil)
+	repo.On("Update", mock.Anything, "target-user", mock.Anything).Return(updated, nil)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPut, "/api/v1/users/target-user",
+		jsonBody(map[string]string{"name": name}))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", authHeaderAdmin("admin-u1"))
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+}
+
+// Admin role: cannot update another admin → 403.
+func TestUpdateUser_AdminCannotEditAdmin(t *testing.T) {
+	router, repo := newRouter()
+	target := &domain.User{ID: "other-admin", Name: "Other Admin", Role: domain.RoleAdmin}
+	repo.On("FindByID", mock.Anything, "other-admin").Return(target, nil)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPut, "/api/v1/users/other-admin",
+		jsonBody(map[string]string{"name": "Hacked"}))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", authHeaderAdmin("admin-u1"))
 	router.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusForbidden, w.Code)
 }
@@ -352,6 +412,7 @@ func TestUpdateUser_InvalidBody(t *testing.T) {
 
 // ── DeleteUser ───────────────────────────────────────────────────────────────
 
+// User role: can delete their own account.
 func TestDeleteUser_Success(t *testing.T) {
 	router, repo := newRouter()
 	repo.On("Delete", mock.Anything, "u1").Return(nil)
@@ -363,23 +424,52 @@ func TestDeleteUser_Success(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 }
 
+// User role: cannot delete another user → 403.
+func TestDeleteUser_Forbidden(t *testing.T) {
+	router, _ := newRouter()
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodDelete, "/api/v1/users/other-user", nil)
+	req.Header.Set("Authorization", authHeader("u1")) // u1 trying to delete other-user
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusForbidden, w.Code)
+}
+
+// User role: own account not found → 404.
 func TestDeleteUser_NotFound(t *testing.T) {
 	router, repo := newRouter()
 	repo.On("Delete", mock.Anything, "notexist").Return(errors.New("not found"))
 
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest(http.MethodDelete, "/api/v1/users/notexist", nil)
-	// Token user must match the param for ownership check to pass.
+	// Token user must match the param so the user-role ownership check passes.
 	req.Header.Set("Authorization", authHeader("notexist"))
 	router.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
-func TestDeleteUser_Forbidden(t *testing.T) {
-	router, _ := newRouter()
+// Admin role: can delete a user-role account.
+func TestDeleteUser_AdminCanDeleteUser(t *testing.T) {
+	router, repo := newRouter()
+	target := &domain.User{ID: "target-user", Role: domain.RoleUser}
+	repo.On("FindByID", mock.Anything, "target-user").Return(target, nil)
+	repo.On("Delete", mock.Anything, "target-user").Return(nil)
+
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest(http.MethodDelete, "/api/v1/users/other-user", nil)
-	req.Header.Set("Authorization", authHeader("u1")) // u1 trying to delete other-user
+	req, _ := http.NewRequest(http.MethodDelete, "/api/v1/users/target-user", nil)
+	req.Header.Set("Authorization", authHeaderAdmin("admin-u1"))
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+}
+
+// Admin role: cannot delete another admin → 403.
+func TestDeleteUser_AdminCannotDeleteAdmin(t *testing.T) {
+	router, repo := newRouter()
+	target := &domain.User{ID: "other-admin", Role: domain.RoleAdmin}
+	repo.On("FindByID", mock.Anything, "other-admin").Return(target, nil)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodDelete, "/api/v1/users/other-admin", nil)
+	req.Header.Set("Authorization", authHeaderAdmin("admin-u1"))
 	router.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusForbidden, w.Code)
 }

@@ -32,11 +32,24 @@ type RegisterInput struct {
 	Name     string `json:"name"     validate:"required,min=2"`
 	Email    string `json:"email"    validate:"required,email"`
 	Password string `json:"password" validate:"required,min=6"`
+	// Role is optional; if empty it defaults to "user".
+	// Values: "admin" | "user"
+	Role string `json:"role" validate:"omitempty,oneof=admin user"`
 }
 
 // Register creates a new user account and returns the created user.
 func (s *UserService) Register(ctx context.Context, in RegisterInput) (*domain.User, error) {
-	return s.newUser(ctx, in.Name, in.Email, in.Password)
+	role := in.Role
+	if role == "" {
+		role = domain.RoleUser
+	}
+	return s.newUser(ctx, in.Name, in.Email, in.Password, role)
+}
+
+// LoginResult is the successful result of Login, carrying the JWT and the user's role.
+type LoginResult struct {
+	Token string
+	Role  string
 }
 
 // LoginInput holds the credentials for authentication.
@@ -45,35 +58,51 @@ type LoginInput struct {
 	Password string `json:"password" validate:"required"`
 }
 
-// Login verifies credentials and returns a signed JWT on success.
-func (s *UserService) Login(ctx context.Context, in LoginInput) (string, error) {
+// Login verifies credentials and returns a signed JWT and the user's role on success.
+func (s *UserService) Login(ctx context.Context, in LoginInput) (LoginResult, error) {
 	user, err := s.repo.FindByEmail(ctx, in.Email)
 	if err != nil || user == nil {
-		return "", errors.New("invalid credentials")
+		return LoginResult{}, errors.New("invalid credentials")
 	}
 	if !hash.CheckPassword(user.Password, in.Password) {
-		return "", errors.New("invalid credentials")
+		return LoginResult{}, errors.New("invalid credentials")
 	}
-	return auth.GenerateToken(user.ID, s.jwtSecret)
+	token, err := auth.GenerateToken(user.ID, user.Role, s.jwtSecret)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	return LoginResult{Token: token, Role: user.Role}, nil
 }
 
 // ── CRUD ──────────────────────────────────────────────────────────────────────
+
+// CallerInfo identifies the authenticated user making a mutation request.
+type CallerInfo struct {
+	ID   string
+	Role string
+}
 
 // CreateInput is the input for creating a user via the protected API.
 type CreateInput struct {
 	Name     string `json:"name"     validate:"required,min=2"`
 	Email    string `json:"email"    validate:"required,email"`
 	Password string `json:"password" validate:"required,min=6"`
+	// Role is optional; defaults to "user" if empty.
+	Role string `json:"role" validate:"omitempty,oneof=admin user"`
 }
 
 // CreateUser creates a user (protected route — caller is already authenticated).
 func (s *UserService) CreateUser(ctx context.Context, in CreateInput) (*domain.User, error) {
-	return s.newUser(ctx, in.Name, in.Email, in.Password)
+	role := in.Role
+	if role == "" {
+		role = domain.RoleUser
+	}
+	return s.newUser(ctx, in.Name, in.Email, in.Password, role)
 }
 
 // newUser is the shared implementation used by both Register and CreateUser.
 // It checks for duplicate email, hashes the password, persists, and returns the user.
-func (s *UserService) newUser(ctx context.Context, name, email, password string) (*domain.User, error) {
+func (s *UserService) newUser(ctx context.Context, name, email, password, role string) (*domain.User, error) {
 	existing, _ := s.repo.FindByEmail(ctx, email)
 	if existing != nil {
 		return nil, errors.New("email already registered")
@@ -86,6 +115,7 @@ func (s *UserService) newUser(ctx context.Context, name, email, password string)
 		ID:        uuid.NewString(),
 		Name:      name,
 		Email:     email,
+		Role:      role,
 		Password:  hashed,
 		CreatedAt: time.Now().UTC(),
 	}
@@ -123,8 +153,34 @@ type UpdateInput struct {
 	Email *string `json:"email" validate:"omitempty,email"`
 }
 
+// authorizeUserMutation enforces RBAC for UpdateUser and DeleteUser:
+//   - anyone: may always mutate their own account
+//   - admin:  may mutate any user whose role is NOT admin
+//   - user:   may only mutate themselves (covered by the self-edit rule above)
+func (s *UserService) authorizeUserMutation(ctx context.Context, caller CallerInfo, targetID string) error {
+	// Self-edit is always permitted regardless of role.
+	if caller.ID == targetID {
+		return nil
+	}
+	if caller.Role == domain.RoleAdmin {
+		target, err := s.repo.FindByID(ctx, targetID)
+		if err != nil || target == nil {
+			return ErrNotFound
+		}
+		if target.Role == domain.RoleAdmin {
+			return ErrForbidden
+		}
+		return nil
+	}
+	// "user" role trying to mutate someone else
+	return ErrForbidden
+}
+
 // UpdateUser applies a partial update and returns the updated user.
-func (s *UserService) UpdateUser(ctx context.Context, id string, in UpdateInput) (*domain.User, error) {
+func (s *UserService) UpdateUser(ctx context.Context, caller CallerInfo, id string, in UpdateInput) (*domain.User, error) {
+	if err := s.authorizeUserMutation(ctx, caller, id); err != nil {
+		return nil, err
+	}
 	return s.repo.Update(ctx, id, domain.UpdateFields{
 		Name:  in.Name,
 		Email: in.Email,
@@ -132,7 +188,10 @@ func (s *UserService) UpdateUser(ctx context.Context, id string, in UpdateInput)
 }
 
 // DeleteUser removes a user by ID.
-func (s *UserService) DeleteUser(ctx context.Context, id string) error {
+func (s *UserService) DeleteUser(ctx context.Context, caller CallerInfo, id string) error {
+	if err := s.authorizeUserMutation(ctx, caller, id); err != nil {
+		return err
+	}
 	return s.repo.Delete(ctx, id)
 }
 

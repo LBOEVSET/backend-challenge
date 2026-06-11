@@ -40,8 +40,6 @@ func VisitorTracker(repo port.VisitorRepository) gin.HandlerFunc {
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
 
-			log.Printf("[visitor] tracking ip=%s ua=%s", ip, ua)
-
 			record := &domain.VisitorRecord{
 				IP:         ip,
 				UserAgent:  ua,

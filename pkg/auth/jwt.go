@@ -10,16 +10,18 @@ import (
 
 const tokenTTL = 24 * time.Hour
 
-// Claims embeds the standard JWT claims and adds the user ID.
+// Claims embeds the standard JWT claims and adds the user ID and role.
 type Claims struct {
 	UserID string `json:"user_id"`
+	Role   string `json:"role"`
 	jwt.RegisteredClaims
 }
 
-// GenerateToken creates a signed HS256 JWT for the given user ID.
-func GenerateToken(userID, secret string) (string, error) {
+// GenerateToken creates a signed HS256 JWT for the given user ID and role.
+func GenerateToken(userID, role, secret string) (string, error) {
 	claims := Claims{
 		UserID: userID,
+		Role:   role,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(tokenTTL)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),

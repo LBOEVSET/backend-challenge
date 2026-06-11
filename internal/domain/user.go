@@ -7,11 +7,18 @@ import (
 	"time"
 )
 
+// Role constants for the RBAC system.
+const (
+	RoleAdmin = "admin"
+	RoleUser  = "user"
+)
+
 // User is the core business entity.
 type User struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
 	Email     string    `json:"email"`
+	Role      string    `json:"role"`
 	Password  string    `json:"-"` // hashed — never serialised to JSON
 	CreatedAt time.Time `json:"created_at"`
 }

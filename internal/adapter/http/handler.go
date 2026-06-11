@@ -1,6 +1,7 @@
 package http
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -56,6 +57,14 @@ func respondErr(c *gin.Context, status int, _ error) {
 	c.JSON(status, gin.H{"error": msg})
 }
 
+// callerInfo extracts the authenticated caller's ID and role from the Gin context.
+func callerInfo(c *gin.Context) application.CallerInfo {
+	return application.CallerInfo{
+		ID:   c.GetString("userID"),
+		Role: c.GetString("userRole"),
+	}
+}
+
 // ── Auth ──────────────────────────────────────────────────────────────────────
 
 // Register godoc
@@ -80,12 +89,12 @@ func (h *Handler) Login(c *gin.Context) {
 	if !bindAndValidate(c, &in) {
 		return
 	}
-	token, err := h.svc.Login(c.Request.Context(), in)
+	result, err := h.svc.Login(c.Request.Context(), in)
 	if err != nil {
 		respondErr(c, http.StatusUnauthorized, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"token": token})
+	c.JSON(http.StatusOK, gin.H{"token": result.Token, "role": result.Role})
 }
 
 // ── User CRUD ─────────────────────────────────────────────────────────────────
@@ -133,18 +142,18 @@ func (h *Handler) ListUsers(c *gin.Context) {
 }
 
 // UpdateUser godoc
-// PUT /api/v1/users/:id   (protected — caller may only update their own account)
+// PUT /api/v1/users/:id   (protected — RBAC enforced in service)
 func (h *Handler) UpdateUser(c *gin.Context) {
-	if c.GetString("userID") != c.Param("id") {
-		respondErr(c, http.StatusForbidden, nil)
-		return
-	}
 	var in application.UpdateInput
 	if !bindAndValidate(c, &in) {
 		return
 	}
-	user, err := h.svc.UpdateUser(c.Request.Context(), c.Param("id"), in)
+	user, err := h.svc.UpdateUser(c.Request.Context(), callerInfo(c), c.Param("id"), in)
 	if err != nil {
+		if errors.Is(err, application.ErrForbidden) {
+			respondErr(c, http.StatusForbidden, err)
+			return
+		}
 		respondErr(c, http.StatusNotFound, err)
 		return
 	}
@@ -152,13 +161,14 @@ func (h *Handler) UpdateUser(c *gin.Context) {
 }
 
 // DeleteUser godoc
-// DELETE /api/v1/users/:id   (protected — caller may only delete their own account)
+// DELETE /api/v1/users/:id   (protected — RBAC enforced in service)
 func (h *Handler) DeleteUser(c *gin.Context) {
-	if c.GetString("userID") != c.Param("id") {
-		respondErr(c, http.StatusForbidden, nil)
-		return
-	}
-	if err := h.svc.DeleteUser(c.Request.Context(), c.Param("id")); err != nil {
+	err := h.svc.DeleteUser(c.Request.Context(), callerInfo(c), c.Param("id"))
+	if err != nil {
+		if errors.Is(err, application.ErrForbidden) {
+			respondErr(c, http.StatusForbidden, err)
+			return
+		}
 		respondErr(c, http.StatusNotFound, err)
 		return
 	}

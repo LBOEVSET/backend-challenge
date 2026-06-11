@@ -20,6 +20,14 @@ func newService(repo *repoMock.UserRepository) *application.UserService {
 	return application.NewUserService(repo, testSecret)
 }
 
+// caller helpers
+func userCaller(id string) application.CallerInfo {
+	return application.CallerInfo{ID: id, Role: domain.RoleUser}
+}
+func adminCaller(id string) application.CallerInfo {
+	return application.CallerInfo{ID: id, Role: domain.RoleAdmin}
+}
+
 // ── Register ──────────────────────────────────────────────────────────────────
 
 func TestRegister_Success(t *testing.T) {
@@ -38,7 +46,27 @@ func TestRegister_Success(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, "Alice", user.Name)
 	assert.Equal(t, "alice@example.com", user.Email)
+	assert.Equal(t, domain.RoleUser, user.Role) // defaults to user
 	assert.NotEmpty(t, user.ID)
+	repo.AssertExpectations(t)
+}
+
+func TestRegister_WithAdminRole(t *testing.T) {
+	repo := new(repoMock.UserRepository)
+	svc  := newService(repo)
+
+	repo.On("FindByEmail", mock.Anything, "admin@example.com").Return(nil, nil)
+	repo.On("Create", mock.Anything, mock.AnythingOfType("*domain.User")).Return(nil)
+
+	user, err := svc.Register(context.Background(), application.RegisterInput{
+		Name:     "Admin",
+		Email:    "admin@example.com",
+		Password: "secret123",
+		Role:     "admin",
+	})
+
+	assert.NoError(t, err)
+	assert.Equal(t, domain.RoleAdmin, user.Role)
 	repo.AssertExpectations(t)
 }
 
@@ -76,17 +104,19 @@ func TestLogin_Success(t *testing.T) {
 		ID:        "abc",
 		Email:     "bob@example.com",
 		Password:  hashed,
+		Role:      domain.RoleUser,
 		CreatedAt: time.Now(),
 	}
 	repo.On("FindByEmail", mock.Anything, "bob@example.com").Return(user, nil)
 
-	token, err := svc.Login(context.Background(), application.LoginInput{
+	result, err := svc.Login(context.Background(), application.LoginInput{
 		Email:    "bob@example.com",
 		Password: "secret123",
 	})
 
 	assert.NoError(t, err)
-	assert.NotEmpty(t, token)
+	assert.NotEmpty(t, result.Token)
+	assert.Equal(t, domain.RoleUser, result.Role)
 	repo.AssertExpectations(t)
 }
 
@@ -157,7 +187,7 @@ func TestDeleteUser_Success(t *testing.T) {
 
 	repo.On("Delete", mock.Anything, "abc").Return(nil)
 
-	err := svc.DeleteUser(context.Background(), "abc")
+	err := svc.DeleteUser(context.Background(), userCaller("abc"), "abc")
 	assert.NoError(t, err)
 }
 
@@ -167,8 +197,55 @@ func TestDeleteUser_NotFound(t *testing.T) {
 
 	repo.On("Delete", mock.Anything, "missing").Return(errors.New("user not found"))
 
-	err := svc.DeleteUser(context.Background(), "missing")
+	err := svc.DeleteUser(context.Background(), userCaller("missing"), "missing")
 	assert.Error(t, err)
+}
+
+func TestDeleteUser_UserForbidden(t *testing.T) {
+	repo := new(repoMock.UserRepository)
+	svc  := newService(repo)
+
+	// User trying to delete someone else → forbidden, no DB call.
+	err := svc.DeleteUser(context.Background(), userCaller("u1"), "other")
+	assert.ErrorIs(t, err, application.ErrForbidden)
+	repo.AssertNotCalled(t, "Delete", mock.Anything, mock.Anything)
+}
+
+func TestDeleteUser_AdminCanDeleteUser(t *testing.T) {
+	repo := new(repoMock.UserRepository)
+	svc  := newService(repo)
+
+	target := &domain.User{ID: "target", Role: domain.RoleUser}
+	repo.On("FindByID", mock.Anything, "target").Return(target, nil)
+	repo.On("Delete", mock.Anything, "target").Return(nil)
+
+	err := svc.DeleteUser(context.Background(), adminCaller("admin"), "target")
+	assert.NoError(t, err)
+	repo.AssertExpectations(t)
+}
+
+func TestDeleteUser_AdminCanDeleteSelf(t *testing.T) {
+	repo := new(repoMock.UserRepository)
+	svc  := newService(repo)
+
+	// Admin deleting their own account — self-edit always permitted.
+	repo.On("Delete", mock.Anything, "admin").Return(nil)
+
+	err := svc.DeleteUser(context.Background(), adminCaller("admin"), "admin")
+	assert.NoError(t, err)
+	repo.AssertExpectations(t)
+}
+
+func TestDeleteUser_AdminCannotDeleteAdmin(t *testing.T) {
+	repo := new(repoMock.UserRepository)
+	svc  := newService(repo)
+
+	target := &domain.User{ID: "other-admin", Role: domain.RoleAdmin}
+	repo.On("FindByID", mock.Anything, "other-admin").Return(target, nil)
+
+	err := svc.DeleteUser(context.Background(), adminCaller("admin"), "other-admin")
+	assert.ErrorIs(t, err, application.ErrForbidden)
+	repo.AssertNotCalled(t, "Delete", mock.Anything, mock.Anything)
 }
 
 // ── ListUsers ─────────────────────────────────────────────────────────────────
@@ -247,7 +324,7 @@ func TestUpdateUser_NameOnly(t *testing.T) {
 	repo.On("Update", mock.Anything, "1", domain.UpdateFields{Name: &newName, Email: nil}).
 		Return(updated, nil)
 
-	result, err := svc.UpdateUser(context.Background(), "1", application.UpdateInput{Name: &newName})
+	result, err := svc.UpdateUser(context.Background(), userCaller("1"), "1", application.UpdateInput{Name: &newName})
 	assert.NoError(t, err)
 	assert.Equal(t, newName, result.Name)
 	repo.AssertExpectations(t)
@@ -263,7 +340,7 @@ func TestUpdateUser_EmailOnly(t *testing.T) {
 	repo.On("Update", mock.Anything, "1", domain.UpdateFields{Name: nil, Email: &newEmail}).
 		Return(updated, nil)
 
-	result, err := svc.UpdateUser(context.Background(), "1", application.UpdateInput{Email: &newEmail})
+	result, err := svc.UpdateUser(context.Background(), userCaller("1"), "1", application.UpdateInput{Email: &newEmail})
 	assert.NoError(t, err)
 	assert.Equal(t, newEmail, result.Email)
 	repo.AssertExpectations(t)
@@ -280,7 +357,7 @@ func TestUpdateUser_BothFields(t *testing.T) {
 	repo.On("Update", mock.Anything, "2", domain.UpdateFields{Name: &newName, Email: &newEmail}).
 		Return(updated, nil)
 
-	result, err := svc.UpdateUser(context.Background(), "2", application.UpdateInput{
+	result, err := svc.UpdateUser(context.Background(), userCaller("2"), "2", application.UpdateInput{
 		Name: &newName, Email: &newEmail,
 	})
 	assert.NoError(t, err)
@@ -295,9 +372,47 @@ func TestUpdateUser_NotFound(t *testing.T) {
 	repo.On("Update", mock.Anything, "999", mock.Anything).
 		Return(nil, errors.New("user not found"))
 
-	_, err := svc.UpdateUser(context.Background(), "999", application.UpdateInput{})
+	_, err := svc.UpdateUser(context.Background(), userCaller("999"), "999", application.UpdateInput{})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
+}
+
+func TestUpdateUser_UserForbidden(t *testing.T) {
+	repo := new(repoMock.UserRepository)
+	svc  := newService(repo)
+
+	// User trying to update someone else → forbidden, no DB call.
+	_, err := svc.UpdateUser(context.Background(), userCaller("u1"), "other", application.UpdateInput{})
+	assert.ErrorIs(t, err, application.ErrForbidden)
+	repo.AssertNotCalled(t, "Update", mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestUpdateUser_AdminCanEditUser(t *testing.T) {
+	repo := new(repoMock.UserRepository)
+	svc  := newService(repo)
+
+	newName := "New Name"
+	target  := &domain.User{ID: "target", Role: domain.RoleUser}
+	updated := &domain.User{ID: "target", Name: newName, Role: domain.RoleUser}
+	repo.On("FindByID", mock.Anything, "target").Return(target, nil)
+	repo.On("Update", mock.Anything, "target", mock.Anything).Return(updated, nil)
+
+	result, err := svc.UpdateUser(context.Background(), adminCaller("admin"), "target", application.UpdateInput{Name: &newName})
+	assert.NoError(t, err)
+	assert.Equal(t, newName, result.Name)
+	repo.AssertExpectations(t)
+}
+
+func TestUpdateUser_AdminCannotEditAdmin(t *testing.T) {
+	repo := new(repoMock.UserRepository)
+	svc  := newService(repo)
+
+	target := &domain.User{ID: "other-admin", Role: domain.RoleAdmin}
+	repo.On("FindByID", mock.Anything, "other-admin").Return(target, nil)
+
+	_, err := svc.UpdateUser(context.Background(), adminCaller("admin"), "other-admin", application.UpdateInput{})
+	assert.ErrorIs(t, err, application.ErrForbidden)
+	repo.AssertNotCalled(t, "Update", mock.Anything, mock.Anything, mock.Anything)
 }
 
 // ── CreateUser ────────────────────────────────────────────────────────────────
@@ -318,6 +433,7 @@ func TestCreateUser_Success(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, "Dave", user.Name)
 	assert.Equal(t, "dave@example.com", user.Email)
+	assert.Equal(t, domain.RoleUser, user.Role) // CreateUser always assigns user role
 	assert.NotEmpty(t, user.ID)
 	assert.NotEmpty(t, user.Password) // stored as hash, not plaintext
 	assert.NotEqual(t, "pass1234", user.Password)
