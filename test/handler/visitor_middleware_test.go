@@ -19,7 +19,7 @@ import (
 func newRouterWithVisitor(vr *mockRepo.VisitorRepository) *gin.Engine {
 	repo := new(mockRepo.UserRepository)
 	svc := application.NewUserService(repo, testSecret)
-	return httpAdapter.NewRouter(svc, testSecret, vr)
+	return httpAdapter.NewRouter(svc, testSecret, vr, "http://localhost:5173")
 }
 
 // ── VisitorTracker middleware ─────────────────────────────────────────────────

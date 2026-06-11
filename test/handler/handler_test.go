@@ -36,7 +36,7 @@ func newRouter() (*gin.Engine, *mockRepo.UserRepository) {
 	visitorRepo := new(mockRepo.VisitorRepository)
 	visitorRepo.On("Upsert", mock.Anything, mock.Anything).Return(nil)
 	svc := application.NewUserService(repo, testSecret)
-	router := httpAdapter.NewRouter(svc, testSecret, visitorRepo)
+	router := httpAdapter.NewRouter(svc, testSecret, visitorRepo, "http://localhost:5173")
 	return router, repo
 }
 
@@ -211,7 +211,7 @@ func TestAuth_WrongSecret(t *testing.T) {
 func TestListUsers_Success(t *testing.T) {
 	router, repo := newRouter()
 	users := []*domain.User{{ID: "1", Name: "Alice", Email: "a@b.com"}}
-	repo.On("FindAll", mock.Anything).Return(users, nil)
+	repo.On("FindAll", mock.Anything, mock.AnythingOfType("int64"), mock.AnythingOfType("int64")).Return(users, nil)
 
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest(http.MethodGet, "/api/v1/users", nil)
@@ -222,7 +222,7 @@ func TestListUsers_Success(t *testing.T) {
 
 func TestListUsers_ServiceError(t *testing.T) {
 	router, repo := newRouter()
-	repo.On("FindAll", mock.Anything).Return([]*domain.User{}, errors.New("db error"))
+	repo.On("FindAll", mock.Anything, mock.AnythingOfType("int64"), mock.AnythingOfType("int64")).Return([]*domain.User{}, errors.New("db error"))
 
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest(http.MethodGet, "/api/v1/users", nil)
@@ -322,9 +322,21 @@ func TestUpdateUser_NotFound(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPut, "/api/v1/users/notexist",
 		jsonBody(map[string]string{"name": "XY"}))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", authHeader("u1"))
+	// Token user must match the param for ownership check to pass.
+	req.Header.Set("Authorization", authHeader("notexist"))
 	router.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusNotFound, w.Code)
+}
+
+func TestUpdateUser_Forbidden(t *testing.T) {
+	router, _ := newRouter()
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPut, "/api/v1/users/other-user",
+		jsonBody(map[string]string{"name": "Hacker"}))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", authHeader("u1")) // u1 trying to modify other-user
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusForbidden, w.Code)
 }
 
 func TestUpdateUser_InvalidBody(t *testing.T) {
@@ -357,7 +369,17 @@ func TestDeleteUser_NotFound(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest(http.MethodDelete, "/api/v1/users/notexist", nil)
-	req.Header.Set("Authorization", authHeader("u1"))
+	// Token user must match the param for ownership check to pass.
+	req.Header.Set("Authorization", authHeader("notexist"))
 	router.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusNotFound, w.Code)
+}
+
+func TestDeleteUser_Forbidden(t *testing.T) {
+	router, _ := newRouter()
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodDelete, "/api/v1/users/other-user", nil)
+	req.Header.Set("Authorization", authHeader("u1")) // u1 trying to delete other-user
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusForbidden, w.Code)
 }

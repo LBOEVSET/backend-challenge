@@ -97,8 +97,15 @@ func (r *UserRepository) FindByEmail(ctx context.Context, email string) (*domain
 	return toDomain(&doc), nil
 }
 
-func (r *UserRepository) FindAll(ctx context.Context) ([]*domain.User, error) {
-	cursor, err := r.col.Find(ctx, bson.M{})
+func (r *UserRepository) FindAll(ctx context.Context, limit, offset int64) ([]*domain.User, error) {
+	opts := options.Find()
+	if limit > 0 {
+		opts.SetLimit(limit)
+	}
+	if offset > 0 {
+		opts.SetSkip(offset)
+	}
+	cursor, err := r.col.Find(ctx, bson.M{}, opts)
 	if err != nil {
 		return nil, err
 	}

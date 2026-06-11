@@ -100,9 +100,21 @@ func (s *UserService) GetUser(ctx context.Context, id string) (*domain.User, err
 	return s.repo.FindByID(ctx, id)
 }
 
-// ListUsers returns all users.
-func (s *UserService) ListUsers(ctx context.Context) ([]*domain.User, error) {
-	return s.repo.FindAll(ctx)
+// ListUsersInput holds pagination parameters for listing users.
+type ListUsersInput struct {
+	Limit  int64
+	Offset int64
+}
+
+// ListUsers returns a page of users. Limit defaults to 20; max is 100.
+func (s *UserService) ListUsers(ctx context.Context, in ListUsersInput) ([]*domain.User, error) {
+	if in.Limit <= 0 || in.Limit > 100 {
+		in.Limit = 20
+	}
+	if in.Offset < 0 {
+		in.Offset = 0
+	}
+	return s.repo.FindAll(ctx, in.Limit, in.Offset)
 }
 
 // UpdateInput holds the optional fields that can be changed.

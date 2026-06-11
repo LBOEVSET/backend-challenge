@@ -19,11 +19,12 @@ import (
 
 func main() {
 	// ── Config ────────────────────────────────────────────────────────────────
-	mongoURI  := getEnv("MONGODB_URI",  "mongodb://localhost:27017")
-	dbName    := getEnv("MONGODB_DB",   "assignment")
-	jwtSecret := getEnv("JWT_SECRET",   "change-me-in-production")
-	port      := getEnv("PORT",         "8080")
-	grpcPort  := getEnv("GRPC_PORT",    "9090")
+	mongoURI      := getEnv("MONGODB_URI",      "mongodb://localhost:27017")
+	dbName        := getEnv("MONGODB_DB",       "assignment")
+	jwtSecret     := getEnv("JWT_SECRET",       "change-me-in-production")
+	port          := getEnv("PORT",             "8080")
+	grpcPort      := getEnv("GRPC_PORT",        "9090")
+	allowedOrigin := getEnv("ALLOWED_ORIGIN",   "https://assignment-web.lboevset.com")
 
 	// ── MongoDB ───────────────────────────────────────────────────────────────
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -70,7 +71,7 @@ func main() {
 	startGRPC(svc, grpcPort)
 
 	// ── HTTP server ───────────────────────────────────────────────────────────
-	router := httpadapter.NewRouter(svc, jwtSecret, visitorRepo)
+	router := httpadapter.NewRouter(svc, jwtSecret, visitorRepo, allowedOrigin)
 	srv := &http.Server{
 		Addr:    ":" + port,
 		Handler: router,

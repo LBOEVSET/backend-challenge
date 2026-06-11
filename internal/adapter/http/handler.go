@@ -2,6 +2,7 @@ package http
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
@@ -34,8 +35,25 @@ func bindAndValidate(c *gin.Context, dst any) bool {
 	return true
 }
 
-func respondErr(c *gin.Context, status int, err error) {
-	c.JSON(status, gin.H{"error": err.Error()})
+// safeMessages maps HTTP status codes to generic client-facing messages.
+// Raw error strings are never sent to clients to prevent information leakage.
+var safeMessages = map[int]string{
+	http.StatusBadRequest:          "bad request",
+	http.StatusUnauthorized:        "unauthorized",
+	http.StatusForbidden:           "forbidden",
+	http.StatusNotFound:            "not found",
+	http.StatusConflict:            "conflict",
+	http.StatusUnprocessableEntity: "validation failed",
+	http.StatusTooManyRequests:     "too many requests",
+	http.StatusInternalServerError: "internal server error",
+}
+
+func respondErr(c *gin.Context, status int, _ error) {
+	msg, ok := safeMessages[status]
+	if !ok {
+		msg = "error"
+	}
+	c.JSON(status, gin.H{"error": msg})
 }
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
@@ -99,9 +117,14 @@ func (h *Handler) GetUser(c *gin.Context) {
 }
 
 // ListUsers godoc
-// GET /api/v1/users   (protected)
+// GET /api/v1/users?limit=20&offset=0   (protected)
 func (h *Handler) ListUsers(c *gin.Context) {
-	users, err := h.svc.ListUsers(c.Request.Context())
+	limit, _ := strconv.ParseInt(c.DefaultQuery("limit", "20"), 10, 64)
+	offset, _ := strconv.ParseInt(c.DefaultQuery("offset", "0"), 10, 64)
+	users, err := h.svc.ListUsers(c.Request.Context(), application.ListUsersInput{
+		Limit:  limit,
+		Offset: offset,
+	})
 	if err != nil {
 		respondErr(c, http.StatusInternalServerError, err)
 		return
@@ -110,8 +133,12 @@ func (h *Handler) ListUsers(c *gin.Context) {
 }
 
 // UpdateUser godoc
-// PUT /api/v1/users/:id   (protected)
+// PUT /api/v1/users/:id   (protected — caller may only update their own account)
 func (h *Handler) UpdateUser(c *gin.Context) {
+	if c.GetString("userID") != c.Param("id") {
+		respondErr(c, http.StatusForbidden, nil)
+		return
+	}
 	var in application.UpdateInput
 	if !bindAndValidate(c, &in) {
 		return
@@ -125,8 +152,12 @@ func (h *Handler) UpdateUser(c *gin.Context) {
 }
 
 // DeleteUser godoc
-// DELETE /api/v1/users/:id   (protected)
+// DELETE /api/v1/users/:id   (protected — caller may only delete their own account)
 func (h *Handler) DeleteUser(c *gin.Context) {
+	if c.GetString("userID") != c.Param("id") {
+		respondErr(c, http.StatusForbidden, nil)
+		return
+	}
 	if err := h.svc.DeleteUser(c.Request.Context(), c.Param("id")); err != nil {
 		respondErr(c, http.StatusNotFound, err)
 		return

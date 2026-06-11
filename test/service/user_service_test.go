@@ -181,9 +181,9 @@ func TestListUsers_Success(t *testing.T) {
 		{ID: "1", Name: "Alice", Email: "alice@example.com"},
 		{ID: "2", Name: "Bob",   Email: "bob@example.com"},
 	}
-	repo.On("FindAll", mock.Anything).Return(users, nil)
+	repo.On("FindAll", mock.Anything, int64(20), int64(0)).Return(users, nil)
 
-	result, err := svc.ListUsers(context.Background())
+	result, err := svc.ListUsers(context.Background(), application.ListUsersInput{})
 	assert.NoError(t, err)
 	assert.Len(t, result, 2)
 	assert.Equal(t, "Alice", result[0].Name)
@@ -195,9 +195,9 @@ func TestListUsers_Empty(t *testing.T) {
 	repo := new(repoMock.UserRepository)
 	svc  := newService(repo)
 
-	repo.On("FindAll", mock.Anything).Return([]*domain.User{}, nil)
+	repo.On("FindAll", mock.Anything, int64(20), int64(0)).Return([]*domain.User{}, nil)
 
-	result, err := svc.ListUsers(context.Background())
+	result, err := svc.ListUsers(context.Background(), application.ListUsersInput{})
 	assert.NoError(t, err)
 	assert.Empty(t, result)
 }
@@ -206,10 +206,33 @@ func TestListUsers_RepoError(t *testing.T) {
 	repo := new(repoMock.UserRepository)
 	svc  := newService(repo)
 
-	repo.On("FindAll", mock.Anything).Return([]*domain.User(nil), errors.New("db error"))
+	repo.On("FindAll", mock.Anything, int64(20), int64(0)).Return([]*domain.User(nil), errors.New("db error"))
 
-	_, err := svc.ListUsers(context.Background())
+	_, err := svc.ListUsers(context.Background(), application.ListUsersInput{})
 	assert.Error(t, err)
+}
+
+func TestListUsers_CustomLimit(t *testing.T) {
+	repo := new(repoMock.UserRepository)
+	svc  := newService(repo)
+
+	repo.On("FindAll", mock.Anything, int64(5), int64(10)).Return([]*domain.User{}, nil)
+
+	_, err := svc.ListUsers(context.Background(), application.ListUsersInput{Limit: 5, Offset: 10})
+	assert.NoError(t, err)
+	repo.AssertExpectations(t)
+}
+
+func TestListUsers_LimitCappedAt100(t *testing.T) {
+	repo := new(repoMock.UserRepository)
+	svc  := newService(repo)
+
+	// Limit 9999 should be clamped to 20 (default)
+	repo.On("FindAll", mock.Anything, int64(20), int64(0)).Return([]*domain.User{}, nil)
+
+	_, err := svc.ListUsers(context.Background(), application.ListUsersInput{Limit: 9999})
+	assert.NoError(t, err)
+	repo.AssertExpectations(t)
 }
 
 // ── UpdateUser ────────────────────────────────────────────────────────────────

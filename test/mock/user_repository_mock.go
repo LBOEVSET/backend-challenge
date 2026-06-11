@@ -35,8 +35,8 @@ func (m *UserRepository) FindByEmail(ctx context.Context, email string) (*domain
 	return args.Get(0).(*domain.User), args.Error(1)
 }
 
-func (m *UserRepository) FindAll(ctx context.Context) ([]*domain.User, error) {
-	args := m.Called(ctx)
+func (m *UserRepository) FindAll(ctx context.Context, limit, offset int64) ([]*domain.User, error) {
+	args := m.Called(ctx, limit, offset)
 	return args.Get(0).([]*domain.User), args.Error(1)
 }
 
